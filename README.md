@@ -51,3 +51,32 @@ UI sliders are exposed through `ranking_slider_config()`:
 
 Use `compute_rank_weights(sliders)` to produce normalized component weights and
 `rank_candidates(candidates, sliders)` to score and sort candidates.
+
+## Local index service
+
+A new `local_index_service` module provides in-process querying over existing full-text indexes.
+
+### Capabilities
+
+- snippet highlights using `<mark>` around matching query terms
+- exact term match locations (`start`, `end`, and `paragraph`)
+- semantic nearest neighbors via cosine similarity on term vectors
+- result-card match explanations such as:
+  - `Matched phrase in paragraph 3`
+  - `Similar to note note-12 from 2024-09-17`
+
+### Quick usage
+
+```python
+from local_index_service import IndexedDocument, LocalIndexService
+
+service = LocalIndexService(
+    {
+        "notes": [
+            IndexedDocument(doc_id="n1", title="Note 1", text="Your indexed text", created_at="2025-01-01"),
+        ],
+    }
+)
+
+cards = service.query("indexed text", indexes=["notes"], semantic_neighbors=2)
+```
