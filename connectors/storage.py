@@ -24,8 +24,8 @@ def upsert_item(db_path: str | Path, item: NormalizedItem) -> None:
             INSERT INTO normalized_items (
                 connector, source_id, source_url, title, author, summary, fulltext,
                 content_type, language, created_at, updated_at, fetched_at,
-                tags_json, highlights_json, metadata_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                tags_json, highlights_json, metadata_json, rights_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(connector, source_id) DO UPDATE SET
                 source_url=excluded.source_url,
                 title=excluded.title,
@@ -39,7 +39,8 @@ def upsert_item(db_path: str | Path, item: NormalizedItem) -> None:
                 fetched_at=excluded.fetched_at,
                 tags_json=excluded.tags_json,
                 highlights_json=excluded.highlights_json,
-                metadata_json=excluded.metadata_json
+                metadata_json=excluded.metadata_json,
+                rights_json=excluded.rights_json
             """,
             (
                 payload["connector"],
@@ -57,6 +58,7 @@ def upsert_item(db_path: str | Path, item: NormalizedItem) -> None:
                 json.dumps(payload["tags"]),
                 json.dumps(payload["highlights"]),
                 json.dumps(payload["metadata"]),
+                json.dumps(payload["rights"]),
             ),
         )
 

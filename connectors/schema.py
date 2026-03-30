@@ -39,6 +39,7 @@ class NormalizedItem:
     tags: list[str] = field(default_factory=list)
     highlights: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
+    rights: dict[str, Any] = field(default_factory=dict)
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), ensure_ascii=False)
@@ -68,6 +69,7 @@ NORMALIZED_ITEM_JSON_SCHEMA: dict[str, Any] = {
         "tags": {"type": "array", "items": {"type": "string"}},
         "highlights": {"type": "array", "items": {"type": "string"}},
         "metadata": {"type": "object"},
+        "rights": {"type": "object"},
     },
     "additionalProperties": False,
 }
@@ -90,6 +92,7 @@ CREATE TABLE IF NOT EXISTS normalized_items (
     tags_json TEXT NOT NULL DEFAULT '[]',
     highlights_json TEXT NOT NULL DEFAULT '[]',
     metadata_json TEXT NOT NULL DEFAULT '{}',
+    rights_json TEXT NOT NULL DEFAULT '{}',
     PRIMARY KEY (connector, source_id)
 );
 
