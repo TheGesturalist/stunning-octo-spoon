@@ -131,7 +131,7 @@ class InteractionEvent:
 
 
 INTENT_CONNECTOR_GROUPS: Dict[QueryIntent, List[str]] = {
-    QueryIntent.ACADEMIC: ["library_indexes", "academic_databases"],
+    QueryIntent.ACADEMIC: ["library_indexes", "academic_databases", "academic_private"],
     QueryIntent.VISUAL: ["pinterest", "are_na", "cosmos", "tumblr"],
     QueryIntent.CANONICAL_CULTURAL: [
         "open_culture",
