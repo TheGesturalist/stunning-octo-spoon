@@ -1,16 +1,21 @@
 import unittest
 
 from query_planner import (
+    InteractionEvent,
+    InteractionEventType,
     PlannerToggles,
-    SearchMode,
     QueryIntent,
     RankCandidate,
     RankingSliders,
+    SearchMode,
+    UserPreferenceVector,
     classify_query_intent,
+    compute_rank_weights,
     get_search_mode_presets,
     plan_query,
     rank_candidates,
     ranking_slider_config,
+    update_user_preference_vector_from_events,
 )
 
 
@@ -84,6 +89,85 @@ class QueryPlannerTests(unittest.TestCase):
         self.assertIn(SearchMode.CONTRARIAN, preset_modes)
         self.assertIn(SearchMode.TIME_TUNNEL, preset_modes)
         self.assertIn(SearchMode.MATERIALITY, preset_modes)
+
+    def test_ranking_slider_config_contains_all_controls(self):
+        config = ranking_slider_config()
+        self.assertIn("relevant_surprising", config)
+        self.assertIn("focused_diverse", config)
+        self.assertIn("recent_timeless", config)
+
+    def test_interactions_update_user_preference_vector(self):
+        vector = update_user_preference_vector_from_events(
+            [
+                InteractionEvent(
+                    event_type=InteractionEventType.SAVED,
+                    topics=("typography",),
+                    source_id="internet_archive",
+                    visual_style="brutalist",
+                ),
+                InteractionEvent(
+                    event_type=InteractionEventType.SKIPPED,
+                    topics=("minimalism",),
+                    source_id="pinterest",
+                    visual_style="minimalist",
+                ),
+            ]
+        )
+        self.assertGreater(vector.topic_preferences["typography"], 0.0)
+        self.assertLess(vector.topic_preferences["minimalism"], 0.0)
+        self.assertGreater(vector.source_trust["internet_archive"], 0.0)
+        self.assertLess(vector.source_trust["pinterest"], 0.0)
+
+    def test_preference_vector_feeds_into_rank_weights(self):
+        base = compute_rank_weights(RankingSliders())
+        vector = UserPreferenceVector(
+            topic_preferences={"punk": 0.6},
+            source_trust={"internet_archive": 0.5},
+            visual_style_preferences={"collage": 0.7},
+        )
+        personalized = compute_rank_weights(RankingSliders(), vector)
+        self.assertGreater(personalized["topic_preference"], base["topic_preference"])
+        self.assertGreater(personalized["source_trust"], base["source_trust"])
+
+    def test_rank_candidates_uses_personalization_scores(self):
+        sliders = RankingSliders(relevant_surprising=0.7, focused_diverse=0.4, recent_timeless=0.5)
+        vector = update_user_preference_vector_from_events(
+            [
+                InteractionEvent(
+                    event_type=InteractionEventType.COLLECTION_ADDED,
+                    topics=("zines",),
+                    source_id="internet_archive",
+                    visual_style="collage",
+                )
+            ]
+        )
+        ranked = rank_candidates(
+            [
+                RankCandidate(
+                    candidate_id="a",
+                    lexical_score=0.7,
+                    semantic_score=0.7,
+                    recency_score=0.4,
+                    novelty_score=0.4,
+                    source_id="internet_archive",
+                    topics=("zines", "punk"),
+                    visual_style="collage",
+                ),
+                RankCandidate(
+                    candidate_id="b",
+                    lexical_score=0.75,
+                    semantic_score=0.75,
+                    recency_score=0.4,
+                    novelty_score=0.4,
+                    source_id="pinterest",
+                    topics=("interiors",),
+                    visual_style="minimalist",
+                ),
+            ],
+            sliders=sliders,
+            preference_vector=vector,
+        )
+        self.assertEqual(ranked[0].candidate.candidate_id, "a")
 
 
 if __name__ == "__main__":
