@@ -26,6 +26,7 @@ The ranking/query layer should read/write only the normalized schema in `schema.
 - `ReaderIOConnector`: saved reading list + highlights
 - `TumblrConnector`: post metadata + captions/tags
 - `InternetArchiveConnector`: metadata + text where available
+- `AcademicPrivateConnector`: institution-accessed databases with per-provider abstract/full-text rights policies
 
 ## SQLite helpers
 

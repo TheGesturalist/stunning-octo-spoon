@@ -14,7 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import math
 import re
-from typing import Iterable, Mapping, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 
 _WORD_RE = re.compile(r"[A-Za-z0-9']+")
@@ -29,6 +29,16 @@ class IndexedDocument:
     text: str
     source: str = "local"
     created_at: str | None = None
+    abstract: str | None = None
+    citation_metadata: Mapping[str, Any] = field(default_factory=dict)
+    rights: Mapping[str, Any] = field(
+        default_factory=lambda: {
+            "allow_abstract": True,
+            "allow_fulltext": True,
+            "can_export": True,
+            "export_policy": "full",
+        }
+    )
 
 
 @dataclass(frozen=True)
@@ -59,6 +69,8 @@ class ResultCard:
     title: str
     source: str
     snippet_highlight: str
+    citation_metadata: Mapping[str, Any] = field(default_factory=dict)
+    rights: Mapping[str, Any] = field(default_factory=dict)
     term_matches: Sequence[TermMatchLocation] = field(default_factory=tuple)
     semantic_neighbors: Sequence[NeighborMatch] = field(default_factory=tuple)
     match_explanations: Sequence[str] = field(default_factory=tuple)
@@ -90,9 +102,10 @@ class LocalIndexService:
             if index_name not in selected:
                 continue
             for doc in docs:
-                term_matches = _find_term_matches(doc.text, query_terms)
+                searchable_text = _searchable_text_for_rights(doc)
+                term_matches = _find_term_matches(searchable_text, query_terms)
                 lexical_score = len(term_matches)
-                semantic_score = _cosine_similarity(_term_freq(query_terms), _term_freq(_tokenize(doc.text)))
+                semantic_score = _cosine_similarity(_term_freq(query_terms), _term_freq(_tokenize(searchable_text)))
                 score = lexical_score + semantic_score
                 if score > 0:
                     candidates.append((score, doc, term_matches))
@@ -102,7 +115,7 @@ class LocalIndexService:
 
         cards: list[ResultCard] = []
         for _, doc, term_matches in top:
-            snippet = _build_snippet(doc.text, term_matches)
+            snippet = _build_snippet(_searchable_text_for_rights(doc), term_matches)
             neighbors = self._nearest_neighbors(doc, semantic_neighbors)
             explanations = _build_explanations(term_matches, neighbors)
             cards.append(
@@ -111,6 +124,8 @@ class LocalIndexService:
                     title=doc.title,
                     source=doc.source,
                     snippet_highlight=snippet,
+                    citation_metadata=doc.citation_metadata,
+                    rights=doc.rights,
                     term_matches=tuple(term_matches),
                     semantic_neighbors=tuple(neighbors),
                     match_explanations=tuple(explanations),
@@ -124,10 +139,12 @@ class LocalIndexService:
         if not pool or count <= 0:
             return []
 
-        target_vec = _term_freq(_tokenize(target.text))
+        target_vec = _term_freq(_tokenize(_searchable_text_for_rights(target)))
         scored: list[tuple[float, IndexedDocument]] = []
         for doc in pool:
-            similarity = _cosine_similarity(target_vec, _term_freq(_tokenize(doc.text)))
+            similarity = _cosine_similarity(
+                target_vec, _term_freq(_tokenize(_searchable_text_for_rights(doc)))
+            )
             if similarity > 0:
                 scored.append((similarity, doc))
 
@@ -142,6 +159,36 @@ class LocalIndexService:
             for similarity, doc in scored[:count]
         ]
         return neighbors
+
+
+def export_result_cards(cards: Sequence[ResultCard]) -> list[dict[str, Any]]:
+    """API-safe export payload that enforces document-level export rights."""
+
+    exported: list[dict[str, Any]] = []
+    for card in cards:
+        if not bool(card.rights.get("can_export", False)):
+            continue
+        exported.append(
+            {
+                "doc_id": card.doc_id,
+                "title": card.title,
+                "source": card.source,
+                "snippet_highlight": card.snippet_highlight,
+                "citation_metadata": dict(card.citation_metadata),
+                "rights": dict(card.rights),
+            }
+        )
+    return exported
+
+
+def _searchable_text_for_rights(doc: IndexedDocument) -> str:
+    allow_fulltext = bool(doc.rights.get("allow_fulltext", False))
+    allow_abstract = bool(doc.rights.get("allow_abstract", False))
+    if allow_fulltext and doc.text:
+        return doc.text
+    if allow_abstract and doc.abstract:
+        return doc.abstract
+    return doc.title
 
 
 def _tokenize(text: str) -> list[str]:

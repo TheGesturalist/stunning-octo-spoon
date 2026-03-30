@@ -5,6 +5,7 @@ from .internet_archive import InternetArchiveConnector
 from .local_library import LocalLibraryConnector
 from .raindrop_io import RaindropIOConnector
 from .reader_io import ReaderIOConnector
+from .academic_private import AcademicPrivateConnector, ProviderAccessPolicy
 from .schema import NORMALIZED_ITEM_JSON_SCHEMA, NORMALIZED_ITEMS_SQLITE_DDL, NormalizedItem
 from .tumblr import TumblrConnector
 
@@ -16,6 +17,8 @@ __all__ = [
     "LocalLibraryConnector",
     "RaindropIOConnector",
     "ReaderIOConnector",
+    "AcademicPrivateConnector",
+    "ProviderAccessPolicy",
     "TumblrConnector",
     "InternetArchiveConnector",
 ]
