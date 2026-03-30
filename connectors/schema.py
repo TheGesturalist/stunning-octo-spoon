@@ -134,4 +134,31 @@ CREATE INDEX IF NOT EXISTS idx_enrichment_edges_type_target
 
 CREATE INDEX IF NOT EXISTS idx_enrichment_edges_item
     ON enrichment_graph_edges(connector, source_id);
+
+CREATE TABLE IF NOT EXISTS link_health_checks (
+    connector TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    source_url TEXT NOT NULL,
+    checked_at TEXT NOT NULL,
+    status_code INTEGER,
+    is_alive INTEGER NOT NULL,
+    archival_fallback_url TEXT,
+    failure_reason TEXT,
+    PRIMARY KEY (connector, source_id, checked_at)
+);
+
+CREATE INDEX IF NOT EXISTS idx_link_health_item
+    ON link_health_checks(connector, source_id);
+
+CREATE TABLE IF NOT EXISTS provenance_events (
+    event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    connector TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    event_at TEXT NOT NULL,
+    details_json TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE INDEX IF NOT EXISTS idx_provenance_item
+    ON provenance_events(connector, source_id, event_at);
 """.strip()
