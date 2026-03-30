@@ -112,6 +112,70 @@ class RankedCandidate:
 
 
 @dataclass(frozen=True)
+class DiscoveryItem:
+    """Canonical item record shared by synchronized UI views."""
+
+    item_id: str
+    title: str
+    score: float
+    related_item_ids: Sequence[str] = field(default_factory=tuple)
+    visual_bucket: str = "references"
+
+
+@dataclass(frozen=True)
+class RankedListEntry:
+    """Entry used by precision ranking view."""
+
+    item_id: str
+    title: str
+    rank: int
+    score: float
+    is_highlighted: bool = False
+
+
+@dataclass(frozen=True)
+class GraphNode:
+    """Node rendered by concept graph view."""
+
+    item_id: str
+    label: str
+    score: float
+    is_highlighted: bool = False
+
+
+@dataclass(frozen=True)
+class GraphEdge:
+    """Edge representing concept relation between two nodes."""
+
+    source_item_id: str
+    target_item_id: str
+    is_highlighted: bool = False
+
+
+@dataclass(frozen=True)
+class MoodboardCard:
+    """Card rendered by moodboard/board visual curation view."""
+
+    item_id: str
+    title: str
+    bucket: str
+    score: float
+    is_highlighted: bool = False
+
+
+@dataclass(frozen=True)
+class SynchronizedViews:
+    """Three synchronized views and their current cross-view highlighting state."""
+
+    ranked_list: Sequence[RankedListEntry]
+    graph_nodes: Sequence[GraphNode]
+    graph_edges: Sequence[GraphEdge]
+    moodboard_cards: Sequence[MoodboardCard]
+    selected_item_id: str | None
+    highlighted_item_ids: Sequence[str]
+
+
+@dataclass(frozen=True)
 class UserPreferenceVector:
     """Per-user preference vector updated from lightweight interactions."""
 
@@ -490,6 +554,99 @@ def rank_candidates(
     return tuple(sorted(ranked, key=lambda item: item.score, reverse=True))
 
 
+def build_synchronized_views(
+    items: Sequence[DiscoveryItem],
+    selected_item_id: str | None = None,
+) -> SynchronizedViews:
+    """Build ranked/graph/moodboard views with synchronized highlighting."""
+
+    if not items:
+        return SynchronizedViews(
+            ranked_list=(),
+            graph_nodes=(),
+            graph_edges=(),
+            moodboard_cards=(),
+            selected_item_id=selected_item_id,
+            highlighted_item_ids=(),
+        )
+
+    by_id = {item.item_id: item for item in items}
+    sorted_items = sorted(items, key=lambda item: item.score, reverse=True)
+
+    highlighted = _highlighted_ids_for_selection(by_id, selected_item_id)
+
+    ranked_list = tuple(
+        RankedListEntry(
+            item_id=item.item_id,
+            title=item.title,
+            rank=idx + 1,
+            score=item.score,
+            is_highlighted=item.item_id in highlighted,
+        )
+        for idx, item in enumerate(sorted_items)
+    )
+
+    graph_nodes = tuple(
+        GraphNode(
+            item_id=item.item_id,
+            label=item.title,
+            score=item.score,
+            is_highlighted=item.item_id in highlighted,
+        )
+        for item in sorted_items
+    )
+
+    edges: list[GraphEdge] = []
+    seen_pairs: set[tuple[str, str]] = set()
+    for item in sorted_items:
+        for related_id in item.related_item_ids:
+            if related_id not in by_id:
+                continue
+            pair = tuple(sorted((item.item_id, related_id)))
+            if pair in seen_pairs:
+                continue
+            seen_pairs.add(pair)
+            edge_highlighted = pair[0] in highlighted and pair[1] in highlighted
+            edges.append(
+                GraphEdge(
+                    source_item_id=pair[0],
+                    target_item_id=pair[1],
+                    is_highlighted=edge_highlighted,
+                )
+            )
+
+    moodboard_cards = tuple(
+        MoodboardCard(
+            item_id=item.item_id,
+            title=item.title,
+            bucket=item.visual_bucket,
+            score=item.score,
+            is_highlighted=item.item_id in highlighted,
+        )
+        for item in sorted_items
+    )
+
+    return SynchronizedViews(
+        ranked_list=ranked_list,
+        graph_nodes=graph_nodes,
+        graph_edges=tuple(edges),
+        moodboard_cards=moodboard_cards,
+        selected_item_id=selected_item_id if selected_item_id in by_id else None,
+        highlighted_item_ids=tuple(sorted(highlighted)),
+    )
+
+
+def apply_synchronized_selection(
+    views: SynchronizedViews,
+    items: Sequence[DiscoveryItem],
+    item_id: str | None,
+) -> SynchronizedViews:
+    """Apply a cross-view selection update from any individual view."""
+
+    _ = views  # API-level affordance for existing callers already holding state.
+    return build_synchronized_views(items=items, selected_item_id=item_id)
+
+
 def _preference_signal_strength(vector: UserPreferenceVector | None) -> float:
     if vector is None:
         return 0.0
@@ -524,3 +681,19 @@ def _style_affinity(vector: UserPreferenceVector | None, visual_style: str) -> f
     if vector is None or not visual_style:
         return 0.0
     return max(min(vector.visual_style_preferences.get(visual_style, 0.0), 1.0), -1.0)
+
+
+def _highlighted_ids_for_selection(
+    items_by_id: Mapping[str, DiscoveryItem],
+    selected_item_id: str | None,
+) -> set[str]:
+    if selected_item_id is None:
+        return set()
+
+    selected = items_by_id.get(selected_item_id)
+    if selected is None:
+        return set()
+
+    highlighted = {selected.item_id}
+    highlighted.update(related_id for related_id in selected.related_item_ids if related_id in items_by_id)
+    return highlighted

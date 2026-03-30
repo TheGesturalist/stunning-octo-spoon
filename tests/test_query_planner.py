@@ -1,6 +1,7 @@
 import unittest
 
 from query_planner import (
+    DiscoveryItem,
     InteractionEvent,
     InteractionEventType,
     PlannerToggles,
@@ -9,6 +10,8 @@ from query_planner import (
     RankingSliders,
     SearchMode,
     UserPreferenceVector,
+    apply_synchronized_selection,
+    build_synchronized_views,
     classify_query_intent,
     compute_rank_weights,
     get_search_mode_presets,
@@ -168,6 +171,67 @@ class QueryPlannerTests(unittest.TestCase):
             preference_vector=vector,
         )
         self.assertEqual(ranked[0].candidate.candidate_id, "a")
+
+    def test_build_synchronized_views_creates_ranked_graph_and_moodboard_views(self):
+        items = [
+            DiscoveryItem(
+                item_id="a",
+                title="Bauhaus poster grid",
+                score=0.92,
+                related_item_ids=("b", "c"),
+                visual_bucket="typography",
+            ),
+            DiscoveryItem(
+                item_id="b",
+                title="Swiss type specimen",
+                score=0.88,
+                related_item_ids=("a",),
+                visual_bucket="typography",
+            ),
+            DiscoveryItem(
+                item_id="c",
+                title="Ink texture scan",
+                score=0.67,
+                related_item_ids=("a",),
+                visual_bucket="materials",
+            ),
+        ]
+
+        views = build_synchronized_views(items, selected_item_id="a")
+        self.assertEqual([entry.item_id for entry in views.ranked_list], ["a", "b", "c"])
+        self.assertEqual(len(views.graph_nodes), 3)
+        self.assertEqual(len(views.graph_edges), 2)
+        self.assertEqual(len(views.moodboard_cards), 3)
+        self.assertEqual(set(views.highlighted_item_ids), {"a", "b", "c"})
+        self.assertTrue(all(card.is_highlighted for card in views.moodboard_cards))
+        self.assertTrue(all(node.is_highlighted for node in views.graph_nodes))
+
+    def test_selection_from_any_view_recomputes_cross_view_highlighting(self):
+        items = [
+            DiscoveryItem(item_id="a", title="Primary", score=0.9, related_item_ids=("b",)),
+            DiscoveryItem(item_id="b", title="Secondary", score=0.7, related_item_ids=("a",)),
+            DiscoveryItem(item_id="c", title="Independent", score=0.6, related_item_ids=()),
+        ]
+
+        views = build_synchronized_views(items)
+        selected = apply_synchronized_selection(views, items, item_id="b")
+        highlighted_ranked_ids = {
+            entry.item_id for entry in selected.ranked_list if entry.is_highlighted
+        }
+        highlighted_moodboard_ids = {
+            card.item_id for card in selected.moodboard_cards if card.is_highlighted
+        }
+
+        self.assertEqual(selected.selected_item_id, "b")
+        self.assertEqual(highlighted_ranked_ids, {"a", "b"})
+        self.assertEqual(highlighted_moodboard_ids, {"a", "b"})
+        self.assertTrue(
+            any(
+                edge.is_highlighted
+                for edge in selected.graph_edges
+                if {edge.source_item_id, edge.target_item_id} == {"a", "b"}
+            )
+        )
 
 
 if __name__ == "__main__":
