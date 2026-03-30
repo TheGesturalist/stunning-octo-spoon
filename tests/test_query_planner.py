@@ -2,11 +2,12 @@ import unittest
 
 from query_planner import (
     PlannerToggles,
+    SearchMode,
     QueryIntent,
     RankCandidate,
     RankingSliders,
     classify_query_intent,
-    compute_rank_weights,
+    get_search_mode_presets,
     plan_query,
     rank_candidates,
     ranking_slider_config,
@@ -42,61 +43,47 @@ class QueryPlannerTests(unittest.TestCase):
         )
         self.assertEqual(len(decision.connector_groups), 2)
 
-    def test_ranking_slider_config_contains_expected_labels(self):
-        config = ranking_slider_config()
-        self.assertEqual(config["relevant_surprising"]["label_left"], "Relevant")
-        self.assertEqual(config["focused_diverse"]["label_right"], "Diverse")
-        self.assertEqual(config["recent_timeless"]["label_left"], "Recent")
-
-    def test_relevant_mode_increases_lexical_weight(self):
-        relevant_weights = compute_rank_weights(
-            RankingSliders(relevant_surprising=0.0, focused_diverse=0.0, recent_timeless=0.5)
+    def test_seed_and_mutate_mode_adds_branching_instruction(self):
+        decision = plan_query(
+            "Start from this saved note about punk zines",
+            mode=SearchMode.SEED_AND_MUTATE,
         )
-        surprising_weights = compute_rank_weights(
-            RankingSliders(relevant_surprising=1.0, focused_diverse=0.0, recent_timeless=0.5)
+        self.assertIn("bookmarks", decision.connector_groups)
+        self.assertTrue(decision.search_instructions)
+
+    def test_contrarian_mode_adds_opposing_lenses(self):
+        decision = plan_query(
+            "Minimalist web design references",
+            mode=SearchMode.CONTRARIAN,
         )
-        self.assertGreater(relevant_weights.lexical_match, surprising_weights.lexical_match)
-        self.assertGreater(surprising_weights.novelty, relevant_weights.novelty)
+        self.assertIn("academic_databases", decision.connector_groups)
+        self.assertIn("tumblr", decision.connector_groups)
 
-    def test_diversity_mode_boosts_alternative_source(self):
-        candidates = [
-            RankCandidate(
-                id="a1",
-                source="source_a",
-                lexical_match=0.94,
-                semantic_match=0.90,
-                recency=0.65,
-                novelty=0.25,
-            ),
-            RankCandidate(
-                id="a2",
-                source="source_a",
-                lexical_match=0.91,
-                semantic_match=0.88,
-                recency=0.62,
-                novelty=0.28,
-            ),
-            RankCandidate(
-                id="b1",
-                source="source_b",
-                lexical_match=0.82,
-                semantic_match=0.80,
-                recency=0.55,
-                novelty=0.65,
-            ),
-        ]
-
-        ranked = rank_candidates(
-            candidates,
-            sliders=RankingSliders(
-                relevant_surprising=0.8,
-                focused_diverse=1.0,
-                recent_timeless=0.5,
-            ),
+    def test_time_tunnel_mode_adds_temporal_coverage_instruction(self):
+        decision = plan_query(
+            "Typeface politics",
+            mode=SearchMode.TIME_TUNNEL,
+        )
+        self.assertIn("internet_archive", decision.connector_groups)
+        self.assertTrue(
+            any("decades" in instruction for instruction in decision.search_instructions)
         )
 
-        top_two_sources = {ranked[0].candidate.source, ranked[1].candidate.source}
-        self.assertEqual(len(top_two_sources), 2)
+    def test_materiality_mode_prioritizes_archival_sources(self):
+        decision = plan_query(
+            "Dada collage references",
+            mode=SearchMode.MATERIALITY,
+        )
+        self.assertEqual(decision.connector_groups[0], "internet_archive")
+
+    def test_exposes_four_ui_mode_presets(self):
+        presets = get_search_mode_presets()
+        self.assertGreaterEqual(len(presets), 4)
+        preset_modes = {preset.mode for preset in presets}
+        self.assertIn(SearchMode.SEED_AND_MUTATE, preset_modes)
+        self.assertIn(SearchMode.CONTRARIAN, preset_modes)
+        self.assertIn(SearchMode.TIME_TUNNEL, preset_modes)
+        self.assertIn(SearchMode.MATERIALITY, preset_modes)
 
 
 if __name__ == "__main__":
