@@ -27,6 +27,16 @@ class QueryIntent(str, Enum):
     PERSONAL_MEMORY = "personal_memory"
 
 
+class SearchMode(str, Enum):
+    """Optional exploratory search modes exposed by UI presets."""
+
+    STANDARD = "standard"
+    SEED_AND_MUTATE = "seed_and_mutate"
+    CONTRARIAN = "contrarian"
+    TIME_TUNNEL = "time_tunnel"
+    MATERIALITY = "materiality"
+
+
 @dataclass(frozen=True)
 class PlannerToggles:
     """Optional planner behavior toggles."""
@@ -43,8 +53,19 @@ class PlannerDecision:
     query: str
     intent: QueryIntent
     connector_groups: Sequence[str]
+    mode: SearchMode = SearchMode.STANDARD
+    search_instructions: Sequence[str] = field(default_factory=tuple)
     toggles: PlannerToggles = field(default_factory=PlannerToggles)
     debug_notes: Sequence[str] = field(default_factory=tuple)
+
+
+@dataclass(frozen=True)
+class SearchModePreset:
+    """Serializable preset metadata for one-click UI mode buttons."""
+
+    mode: SearchMode
+    label: str
+    description: str
 
 
 INTENT_CONNECTOR_GROUPS: Dict[QueryIntent, List[str]] = {
@@ -57,6 +78,29 @@ INTENT_CONNECTOR_GROUPS: Dict[QueryIntent, List[str]] = {
     ],
     QueryIntent.PERSONAL_MEMORY: ["local_notes", "bookmarks", "highlights"],
 }
+
+SEARCH_MODE_PRESETS: Sequence[SearchModePreset] = (
+    SearchModePreset(
+        mode=SearchMode.SEED_AND_MUTATE,
+        label="Seed-and-mutate",
+        description="Start from one URL/image/note and evolve adjacent paths.",
+    ),
+    SearchModePreset(
+        mode=SearchMode.CONTRARIAN,
+        label="Contrarian",
+        description="Intentionally include opposing aesthetics and arguments.",
+    ),
+    SearchModePreset(
+        mode=SearchMode.TIME_TUNNEL,
+        label="Time tunnel",
+        description="Track the same concept across multiple decades.",
+    ),
+    SearchModePreset(
+        mode=SearchMode.MATERIALITY,
+        label="Materiality",
+        description="Prioritize scans, marginalia, ephemera, and archival traces.",
+    ),
+)
 
 # Ordered precedence used when multiple keyword buckets match.
 _INTENT_ORDER: Sequence[QueryIntent] = (
@@ -139,14 +183,17 @@ def classify_query_intent(query: str) -> QueryIntent:
 def plan_query(
     query: str,
     toggles: PlannerToggles | None = None,
+    mode: SearchMode = SearchMode.STANDARD,
 ) -> PlannerDecision:
     """Build a connector plan for a query and log debugging details."""
 
     toggles = toggles or PlannerToggles()
     debug_notes: List[str] = []
+    search_instructions: List[str] = []
 
     intent = classify_query_intent(query)
     debug_notes.append(f"intent={intent.value}")
+    debug_notes.append(f"mode={mode.value}")
 
     if toggles.visual_only:
         intent = QueryIntent.VISUAL
@@ -156,6 +203,40 @@ def plan_query(
     debug_notes.append(
         "base_connectors=" + ",".join(connector_groups)
     )
+
+    if mode == SearchMode.SEED_AND_MUTATE:
+        _append_unique(
+            connector_groups,
+            ["bookmarks", "highlights", "tumblr", "internet_archive"],
+        )
+        search_instructions.append(
+            "Start from one seed artifact (URL/image/note) and iteratively branch to related references."
+        )
+        debug_notes.append("mode.seed_and_mutate=true -> added chainable memory+visual+archive connectors")
+    elif mode == SearchMode.CONTRARIAN:
+        _append_unique(connector_groups, INTENT_CONNECTOR_GROUPS[QueryIntent.ACADEMIC])
+        _append_unique(connector_groups, INTENT_CONNECTOR_GROUPS[QueryIntent.VISUAL])
+        search_instructions.append(
+            "Surface opposing aesthetics, dissenting arguments, and counterexamples alongside primary matches."
+        )
+        debug_notes.append("mode.contrarian=true -> added opposing-lens academic+visual expansion")
+    elif mode == SearchMode.TIME_TUNNEL:
+        _append_unique(connector_groups, INTENT_CONNECTOR_GROUPS[QueryIntent.ACADEMIC])
+        _append_unique(connector_groups, INTENT_CONNECTOR_GROUPS[QueryIntent.CANONICAL_CULTURAL])
+        search_instructions.append(
+            "Map the same concept across decades, including at least one source per period."
+        )
+        debug_notes.append("mode.time_tunnel=true -> expanded temporal academic+canonical coverage")
+    elif mode == SearchMode.MATERIALITY:
+        _prioritize_connectors(
+            connector_groups,
+            ["internet_archive", "public_domain_review", "open_culture", "local_notes"],
+        )
+        _append_unique(connector_groups, ["internet_archive", "local_notes", "bookmarks"])
+        search_instructions.append(
+            "Prioritize scans, marginalia, ephemera, archival records, and material metadata."
+        )
+        debug_notes.append("mode.materiality=true -> prioritized archive/ephemera-first connector ordering")
 
     if toggles.fast_search and toggles.deep_search:
         # Fast search takes precedence for latency-sensitive behavior.
@@ -190,6 +271,8 @@ def plan_query(
         query=query,
         intent=intent,
         connector_groups=tuple(connector_groups),
+        mode=mode,
+        search_instructions=tuple(search_instructions),
         toggles=toggles,
         debug_notes=tuple(debug_notes),
     )
@@ -203,3 +286,17 @@ def _append_unique(target: List[str], values: Iterable[str]) -> None:
         if value not in seen:
             target.append(value)
             seen.add(value)
+
+
+def _prioritize_connectors(target: List[str], priority: Sequence[str]) -> None:
+    """Move prioritized connector ids to the front while preserving relative order."""
+
+    ranked = [connector for connector in priority if connector in target]
+    remainder = [connector for connector in target if connector not in ranked]
+    target[:] = ranked + remainder
+
+
+def get_search_mode_presets() -> Sequence[SearchModePreset]:
+    """Expose one-click search mode presets for UI consumption."""
+
+    return SEARCH_MODE_PRESETS
