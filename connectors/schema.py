@@ -99,3 +99,36 @@ CREATE INDEX IF NOT EXISTS idx_normalized_items_title
 CREATE INDEX IF NOT EXISTS idx_normalized_items_updated_at
     ON normalized_items(updated_at);
 """.strip()
+
+
+ENRICHMENT_SQLITE_DDL = """
+CREATE TABLE IF NOT EXISTS enrichment_facets (
+    connector TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    facet_type TEXT NOT NULL,
+    facet_value TEXT NOT NULL,
+    confidence REAL NOT NULL,
+    PRIMARY KEY (connector, source_id, facet_type, facet_value)
+);
+
+CREATE INDEX IF NOT EXISTS idx_enrichment_facets_type_value
+    ON enrichment_facets(facet_type, facet_value);
+
+CREATE INDEX IF NOT EXISTS idx_enrichment_facets_item
+    ON enrichment_facets(connector, source_id);
+
+CREATE TABLE IF NOT EXISTS enrichment_graph_edges (
+    connector TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    edge_type TEXT NOT NULL,
+    target_node TEXT NOT NULL,
+    weight REAL NOT NULL,
+    PRIMARY KEY (connector, source_id, edge_type, target_node)
+);
+
+CREATE INDEX IF NOT EXISTS idx_enrichment_edges_type_target
+    ON enrichment_graph_edges(edge_type, target_node);
+
+CREATE INDEX IF NOT EXISTS idx_enrichment_edges_item
+    ON enrichment_graph_edges(connector, source_id);
+""".strip()
