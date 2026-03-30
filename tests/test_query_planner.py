@@ -14,7 +14,9 @@ from query_planner import (
     build_synchronized_views,
     classify_query_intent,
     compute_rank_weights,
+    apply_query_constraints,
     get_search_mode_presets,
+    parse_constrained_query,
     plan_query,
     rank_candidates,
     ranking_slider_config,
@@ -232,6 +234,55 @@ class QueryPlannerTests(unittest.TestCase):
                 if {edge.source_item_id, edge.target_item_id} == {"a", "b"}
             )
         )
+
+    def test_parses_advanced_constrained_query_syntax(self):
+        parsed = parse_constrained_query(
+            "archive collage source:internet_archive -source:tumblr tag:scan -tag:ad"
+        )
+        self.assertEqual(parsed.plain_query, "archive collage")
+        self.assertEqual(parsed.constraints.source_includes, ("internet_archive",))
+        self.assertEqual(parsed.constraints.source_excludes, ("tumblr",))
+        self.assertEqual(parsed.constraints.required_tags, ("scan",))
+        self.assertEqual(parsed.constraints.excluded_tags, ("ad",))
+
+    def test_applies_constraints_for_curation_workflows(self):
+        parsed = parse_constrained_query("archive source:internet_archive -tag:ad")
+        constrained = apply_query_constraints(
+            [
+                RankCandidate(
+                    candidate_id="good",
+                    lexical_score=0.5,
+                    semantic_score=0.4,
+                    recency_score=0.3,
+                    novelty_score=0.2,
+                    source_id="internet_archive",
+                    topics=("archive", "design"),
+                    tags=("scan",),
+                ),
+                RankCandidate(
+                    candidate_id="bad-source",
+                    lexical_score=0.5,
+                    semantic_score=0.4,
+                    recency_score=0.3,
+                    novelty_score=0.2,
+                    source_id="tumblr",
+                    topics=("archive",),
+                    tags=("scan",),
+                ),
+                RankCandidate(
+                    candidate_id="bad-tag",
+                    lexical_score=0.5,
+                    semantic_score=0.4,
+                    recency_score=0.3,
+                    novelty_score=0.2,
+                    source_id="internet_archive",
+                    topics=("archive",),
+                    tags=("ad",),
+                ),
+            ],
+            parsed.constraints,
+        )
+        self.assertEqual([candidate.candidate_id for candidate in constrained], ["good"])
 
 
 if __name__ == "__main__":

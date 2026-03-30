@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 import logging
+import re
 from typing import Dict, Iterable, List, Mapping, MutableMapping, Sequence
 
 
@@ -100,6 +101,7 @@ class RankCandidate:
     source_id: str
     topics: Sequence[str] = field(default_factory=tuple)
     visual_style: str = ""
+    tags: Sequence[str] = field(default_factory=tuple)
 
 
 @dataclass(frozen=True)
@@ -192,6 +194,27 @@ class InteractionEvent:
     topics: Sequence[str] = field(default_factory=tuple)
     source_id: str = ""
     visual_style: str = ""
+
+
+@dataclass(frozen=True)
+class QueryConstraints:
+    """Structured constraints parsed from advanced curation query syntax."""
+
+    required_terms: Sequence[str] = field(default_factory=tuple)
+    excluded_terms: Sequence[str] = field(default_factory=tuple)
+    source_includes: Sequence[str] = field(default_factory=tuple)
+    source_excludes: Sequence[str] = field(default_factory=tuple)
+    required_tags: Sequence[str] = field(default_factory=tuple)
+    excluded_tags: Sequence[str] = field(default_factory=tuple)
+
+
+@dataclass(frozen=True)
+class ParsedConstrainedQuery:
+    """Parsed result for advanced curation query syntax."""
+
+    raw_query: str
+    plain_query: str
+    constraints: QueryConstraints
 
 
 INTENT_CONNECTOR_GROUPS: Dict[QueryIntent, List[str]] = {
@@ -288,6 +311,9 @@ _INTERACTION_EVENT_STRENGTH: Mapping[InteractionEventType, float] = {
     InteractionEventType.COLLECTION_ADDED: 0.25,
 }
 
+_NEGATED_PREFIX_RE = re.compile(r"^-(.+)")
+_FIELD_RE = re.compile(r"^(source|tag):(.+)$", re.IGNORECASE)
+
 
 def classify_query_intent(query: str) -> QueryIntent:
     """Classify query intent via keyword heuristics.
@@ -325,8 +351,11 @@ def plan_query(
     toggles = toggles or PlannerToggles()
     debug_notes: List[str] = []
     search_instructions: List[str] = []
+    parsed_query = parse_constrained_query(query)
+    if parsed_query.constraints != QueryConstraints():
+        debug_notes.append("constraints=detected")
 
-    intent = classify_query_intent(query)
+    intent = classify_query_intent(parsed_query.plain_query)
     debug_notes.append(f"intent={intent.value}")
     debug_notes.append(f"mode={mode.value}")
 
@@ -411,6 +440,98 @@ def plan_query(
         toggles=toggles,
         debug_notes=tuple(debug_notes),
     )
+
+
+def parse_constrained_query(query: str) -> ParsedConstrainedQuery:
+    """Parse curation-oriented constrained query syntax.
+
+    Supported tokens:
+    - free terms: archive collage
+    - negated free terms: -minimalism
+    - source include/exclude: source:internet_archive, -source:tumblr
+    - tag include/exclude: tag:scan, -tag:ad
+    """
+
+    required_terms: list[str] = []
+    excluded_terms: list[str] = []
+    source_includes: list[str] = []
+    source_excludes: list[str] = []
+    required_tags: list[str] = []
+    excluded_tags: list[str] = []
+
+    for token in query.split():
+        token = token.strip()
+        if not token:
+            continue
+
+        negated_match = _NEGATED_PREFIX_RE.match(token)
+        is_negated = negated_match is not None
+        payload = negated_match.group(1) if negated_match else token
+
+        field_match = _FIELD_RE.match(payload)
+        if field_match:
+            field_name = field_match.group(1).lower()
+            field_value = field_match.group(2).strip().lower()
+            if not field_value:
+                continue
+            if field_name == "source":
+                (source_excludes if is_negated else source_includes).append(field_value)
+            elif field_name == "tag":
+                (excluded_tags if is_negated else required_tags).append(field_value)
+            continue
+
+        normalized_term = payload.lower()
+        if is_negated:
+            excluded_terms.append(normalized_term)
+        else:
+            required_terms.append(normalized_term)
+
+    plain_query = " ".join(required_terms).strip()
+    return ParsedConstrainedQuery(
+        raw_query=query,
+        plain_query=plain_query or query,
+        constraints=QueryConstraints(
+            required_terms=tuple(required_terms),
+            excluded_terms=tuple(excluded_terms),
+            source_includes=tuple(source_includes),
+            source_excludes=tuple(source_excludes),
+            required_tags=tuple(required_tags),
+            excluded_tags=tuple(excluded_tags),
+        ),
+    )
+
+
+def apply_query_constraints(
+    candidates: Sequence[RankCandidate],
+    constraints: QueryConstraints,
+) -> Sequence[RankCandidate]:
+    """Filter candidates according to parsed advanced curation constraints."""
+
+    if not candidates:
+        return ()
+
+    filtered: list[RankCandidate] = []
+    for candidate in candidates:
+        source = candidate.source_id.lower()
+        tags = {tag.lower() for tag in candidate.tags}
+        topics = {topic.lower() for topic in candidate.topics}
+
+        if constraints.source_includes and source not in constraints.source_includes:
+            continue
+        if constraints.source_excludes and source in constraints.source_excludes:
+            continue
+        if constraints.required_tags and not set(constraints.required_tags).issubset(tags):
+            continue
+        if constraints.excluded_tags and set(constraints.excluded_tags) & tags:
+            continue
+        if constraints.required_terms and not set(constraints.required_terms).issubset(topics):
+            continue
+        if constraints.excluded_terms and set(constraints.excluded_terms) & topics:
+            continue
+
+        filtered.append(candidate)
+
+    return tuple(filtered)
 
 
 def _append_unique(target: List[str], values: Iterable[str]) -> None:
