@@ -8,12 +8,17 @@ from .reader_io import ReaderIOConnector
 from .academic_private import AcademicPrivateConnector, ProviderAccessPolicy
 from .schema import NORMALIZED_ITEM_JSON_SCHEMA, NORMALIZED_ITEMS_SQLITE_DDL, NormalizedItem
 from .tumblr import TumblrConnector
+from .storage import init_sqlite, upsert_item, upsert_item_with_enrichment
 
 __all__ = [
     "BaseConnector",
     "NormalizedItem",
     "NORMALIZED_ITEM_JSON_SCHEMA",
     "NORMALIZED_ITEMS_SQLITE_DDL",
+    "ENRICHMENT_SQLITE_DDL",
+    "init_sqlite",
+    "upsert_item",
+    "upsert_item_with_enrichment",
     "LocalLibraryConnector",
     "RaindropIOConnector",
     "ReaderIOConnector",

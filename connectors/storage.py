@@ -6,12 +6,14 @@ import json
 import sqlite3
 from pathlib import Path
 
-from .schema import NORMALIZED_ITEMS_SQLITE_DDL, NormalizedItem
+from .enrichment import enrich_item
+from .schema import ENRICHMENT_SQLITE_DDL, NORMALIZED_ITEMS_SQLITE_DDL, NormalizedItem
 
 
 def init_sqlite(db_path: str | Path) -> None:
     with sqlite3.connect(db_path) as conn:
         conn.executescript(NORMALIZED_ITEMS_SQLITE_DDL)
+        conn.executescript(ENRICHMENT_SQLITE_DDL)
 
 
 def upsert_item(db_path: str | Path, item: NormalizedItem) -> None:
@@ -58,4 +60,56 @@ def upsert_item(db_path: str | Path, item: NormalizedItem) -> None:
                 json.dumps(payload["metadata"]),
                 json.dumps(payload["rights"]),
             ),
+        )
+
+
+def upsert_item_with_enrichment(db_path: str | Path, item: NormalizedItem) -> None:
+    """Persist a normalized item and derived enrichment artifacts."""
+
+    upsert_item(db_path, item)
+    enrichment = enrich_item(item)
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "DELETE FROM enrichment_facets WHERE connector = ? AND source_id = ?",
+            (item.connector, item.source_id),
+        )
+        conn.execute(
+            "DELETE FROM enrichment_graph_edges WHERE connector = ? AND source_id = ?",
+            (item.connector, item.source_id),
+        )
+
+        conn.executemany(
+            """
+            INSERT INTO enrichment_facets (
+                connector, source_id, facet_type, facet_value, confidence
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    item.connector,
+                    item.source_id,
+                    facet.facet_type,
+                    facet.facet_value,
+                    facet.confidence,
+                )
+                for facet in enrichment.facets
+            ],
+        )
+        conn.executemany(
+            """
+            INSERT INTO enrichment_graph_edges (
+                connector, source_id, edge_type, target_node, weight
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    item.connector,
+                    item.source_id,
+                    edge.edge_type,
+                    edge.target_node,
+                    edge.weight,
+                )
+                for edge in enrichment.edges
+            ],
         )

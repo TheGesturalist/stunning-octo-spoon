@@ -80,3 +80,21 @@ service = LocalIndexService(
 
 cards = service.query("indexed text", indexes=["notes"], semantic_neighbors=2)
 ```
+
+## Post-ingestion enrichment pipeline
+
+The connectors storage layer now supports a post-ingestion enrichment pass that extracts:
+
+- named entities
+- themes / motifs
+- medium / style tags (essay, scan, collage, manifesto, etc.)
+- mood / tone labels
+
+Use `connectors.storage.upsert_item_with_enrichment(...)` to persist a normalized item plus enrichment artifacts.
+
+### Storage model
+
+- `enrichment_facets`: searchable facet rows (`facet_type`, `facet_value`, `confidence`)
+- `enrichment_graph_edges`: graph links from item → semantic node (`edge_type`, `target_node`, `weight`)
+
+Both tables are indexed for item lookups and facet/edge target lookups.
