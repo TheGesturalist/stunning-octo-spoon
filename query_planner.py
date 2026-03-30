@@ -12,7 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 import logging
-from typing import Dict, Iterable, List, Mapping, Sequence
+from typing import Dict, Iterable, List, Mapping, MutableMapping, Sequence
 
 
 logger = logging.getLogger(__name__)
@@ -35,6 +35,17 @@ class SearchMode(str, Enum):
     CONTRARIAN = "contrarian"
     TIME_TUNNEL = "time_tunnel"
     MATERIALITY = "materiality"
+
+
+class InteractionEventType(str, Enum):
+    """Supported lightweight interaction event types."""
+
+    CLICKED = "clicked"
+    SAVED = "saved"
+    SKIPPED = "skipped"
+    LONG_READ = "long-read"
+    OPENED_IN_NEW_TAB = "opened-in-new-tab"
+    COLLECTION_ADDED = "collection-added"
 
 
 @dataclass(frozen=True)
@@ -66,6 +77,57 @@ class SearchModePreset:
     mode: SearchMode
     label: str
     description: str
+
+
+@dataclass(frozen=True)
+class RankingSliders:
+    """UI slider positions in [0.0, 1.0]."""
+
+    relevant_surprising: float = 0.5
+    focused_diverse: float = 0.5
+    recent_timeless: float = 0.5
+
+
+@dataclass(frozen=True)
+class RankCandidate:
+    """Candidate row for weighted ranking."""
+
+    candidate_id: str
+    lexical_score: float
+    semantic_score: float
+    recency_score: float
+    novelty_score: float
+    source_id: str
+    topics: Sequence[str] = field(default_factory=tuple)
+    visual_style: str = ""
+
+
+@dataclass(frozen=True)
+class RankedCandidate:
+    """Ranked output with stable explanation details."""
+
+    candidate: RankCandidate
+    score: float
+    component_scores: Mapping[str, float]
+
+
+@dataclass(frozen=True)
+class UserPreferenceVector:
+    """Per-user preference vector updated from lightweight interactions."""
+
+    topic_preferences: Mapping[str, float] = field(default_factory=dict)
+    source_trust: Mapping[str, float] = field(default_factory=dict)
+    visual_style_preferences: Mapping[str, float] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class InteractionEvent:
+    """Interaction record used to update user preferences."""
+
+    event_type: InteractionEventType
+    topics: Sequence[str] = field(default_factory=tuple)
+    source_id: str = ""
+    visual_style: str = ""
 
 
 INTENT_CONNECTOR_GROUPS: Dict[QueryIntent, List[str]] = {
@@ -151,6 +213,15 @@ _INTENT_KEYWORDS: Dict[QueryIntent, Sequence[str]] = {
         "what did i read",
         "my library",
     ),
+}
+
+_INTERACTION_EVENT_STRENGTH: Mapping[InteractionEventType, float] = {
+    InteractionEventType.CLICKED: 0.08,
+    InteractionEventType.SAVED: 0.22,
+    InteractionEventType.SKIPPED: -0.15,
+    InteractionEventType.LONG_READ: 0.18,
+    InteractionEventType.OPENED_IN_NEW_TAB: 0.1,
+    InteractionEventType.COLLECTION_ADDED: 0.25,
 }
 
 
@@ -300,3 +371,156 @@ def get_search_mode_presets() -> Sequence[SearchModePreset]:
     """Expose one-click search mode presets for UI consumption."""
 
     return SEARCH_MODE_PRESETS
+
+
+def ranking_slider_config() -> Mapping[str, Mapping[str, str]]:
+    """Return slider metadata for ranking controls."""
+
+    return {
+        "relevant_surprising": {"min_label": "Relevant", "max_label": "Surprising"},
+        "focused_diverse": {"min_label": "Focused", "max_label": "Diverse"},
+        "recent_timeless": {"min_label": "Recent", "max_label": "Timeless"},
+    }
+
+
+def update_user_preference_vector(
+    vector: UserPreferenceVector,
+    event: InteractionEvent,
+) -> UserPreferenceVector:
+    """Update topic/source/style preference vectors from a single interaction event."""
+
+    delta = _INTERACTION_EVENT_STRENGTH[event.event_type]
+    topic_preferences = dict(vector.topic_preferences)
+    source_trust = dict(vector.source_trust)
+    visual_style_preferences = dict(vector.visual_style_preferences)
+
+    for topic in event.topics:
+        topic_preferences[topic] = topic_preferences.get(topic, 0.0) + delta
+
+    if event.source_id:
+        source_trust[event.source_id] = source_trust.get(event.source_id, 0.0) + delta
+
+    if event.visual_style:
+        visual_style_preferences[event.visual_style] = (
+            visual_style_preferences.get(event.visual_style, 0.0) + delta
+        )
+
+    return UserPreferenceVector(
+        topic_preferences=topic_preferences,
+        source_trust=source_trust,
+        visual_style_preferences=visual_style_preferences,
+    )
+
+
+def update_user_preference_vector_from_events(
+    events: Sequence[InteractionEvent],
+    initial_vector: UserPreferenceVector | None = None,
+) -> UserPreferenceVector:
+    """Fold many interaction events into a single updated user preference vector."""
+
+    vector = initial_vector or UserPreferenceVector()
+    for event in events:
+        vector = update_user_preference_vector(vector, event)
+    return vector
+
+
+def compute_rank_weights(
+    sliders: RankingSliders,
+    preference_vector: UserPreferenceVector | None = None,
+) -> Mapping[str, float]:
+    """Compute normalized component weights from sliders and preference-signal strength."""
+
+    base_weights: MutableMapping[str, float] = {
+        "lexical": 0.20 + 0.40 * sliders.relevant_surprising,
+        "semantic": 0.20 + 0.35 * sliders.relevant_surprising,
+        "novelty": 0.10 + 0.35 * (1.0 - sliders.relevant_surprising),
+        "recency": 0.15 + 0.45 * sliders.recent_timeless,
+        "diversity": 0.10 + 0.35 * sliders.focused_diverse,
+    }
+
+    preference_signal = _preference_signal_strength(preference_vector)
+    base_weights["topic_preference"] = 0.05 + 0.25 * preference_signal
+    base_weights["source_trust"] = 0.05 + 0.25 * preference_signal
+    base_weights["visual_style_preference"] = 0.05 + 0.20 * preference_signal
+
+    total = sum(base_weights.values())
+    return {key: value / total for key, value in base_weights.items()}
+
+
+def rank_candidates(
+    candidates: Sequence[RankCandidate],
+    sliders: RankingSliders,
+    preference_vector: UserPreferenceVector | None = None,
+) -> Sequence[RankedCandidate]:
+    """Score/sort candidates with slider + interaction-informed personalization."""
+
+    if not candidates:
+        return ()
+
+    weights = compute_rank_weights(sliders, preference_vector)
+    source_counts: Dict[str, int] = {}
+    for candidate in candidates:
+        source_counts[candidate.source_id] = source_counts.get(candidate.source_id, 0) + 1
+
+    ranked: List[RankedCandidate] = []
+    for candidate in candidates:
+        diversity_score = 1.0 / source_counts[candidate.source_id]
+        topic_score = _topic_affinity(preference_vector, candidate.topics)
+        source_score = _source_affinity(preference_vector, candidate.source_id)
+        style_score = _style_affinity(preference_vector, candidate.visual_style)
+        component_scores = {
+            "lexical": candidate.lexical_score,
+            "semantic": candidate.semantic_score,
+            "novelty": candidate.novelty_score,
+            "recency": candidate.recency_score,
+            "diversity": diversity_score,
+            "topic_preference": topic_score,
+            "source_trust": source_score,
+            "visual_style_preference": style_score,
+        }
+        score = sum(weights[name] * component_scores[name] for name in component_scores)
+        ranked.append(
+            RankedCandidate(
+                candidate=candidate,
+                score=score,
+                component_scores=component_scores,
+            )
+        )
+
+    return tuple(sorted(ranked, key=lambda item: item.score, reverse=True))
+
+
+def _preference_signal_strength(vector: UserPreferenceVector | None) -> float:
+    if vector is None:
+        return 0.0
+    magnitudes = [
+        abs(value)
+        for mapping in (
+            vector.topic_preferences,
+            vector.source_trust,
+            vector.visual_style_preferences,
+        )
+        for value in mapping.values()
+    ]
+    if not magnitudes:
+        return 0.0
+    return min(sum(magnitudes) / (len(magnitudes) * 0.5), 1.0)
+
+
+def _topic_affinity(vector: UserPreferenceVector | None, topics: Sequence[str]) -> float:
+    if vector is None or not topics:
+        return 0.0
+    values = [vector.topic_preferences.get(topic, 0.0) for topic in topics]
+    return max(min(sum(values) / len(values), 1.0), -1.0)
+
+
+def _source_affinity(vector: UserPreferenceVector | None, source_id: str) -> float:
+    if vector is None or not source_id:
+        return 0.0
+    return max(min(vector.source_trust.get(source_id, 0.0), 1.0), -1.0)
+
+
+def _style_affinity(vector: UserPreferenceVector | None, visual_style: str) -> float:
+    if vector is None or not visual_style:
+        return 0.0
+    return max(min(vector.visual_style_preferences.get(visual_style, 0.0), 1.0), -1.0)
