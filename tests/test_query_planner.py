@@ -4,9 +4,13 @@ from query_planner import (
     PlannerToggles,
     SearchMode,
     QueryIntent,
+    RankCandidate,
+    RankingSliders,
     classify_query_intent,
     get_search_mode_presets,
     plan_query,
+    rank_candidates,
+    ranking_slider_config,
 )
 
 
