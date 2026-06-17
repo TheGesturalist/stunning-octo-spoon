@@ -98,13 +98,14 @@ The storage and search layers respect these flags.
 `run.py` is the command-line interface. It ties everything together.
 
 ```
-python run.py init                             # create/migrate the database
-python run.py ingest raindrop --token X        # pull from a source
-python run.py ingest fixture --path fixtures/  # load test data
-python run.py search "collage archive"         # search everything
-python run.py digest                           # weekly summary of new items
-python run.py health                           # check for dead links
-python run.py stats                            # item/facet/edge counts
+python run.py init                                      # create/migrate the database
+python run.py ingest raindrop --token X                 # pull from a source
+python run.py ingest fixture --path fixtures/           # load test data
+python run.py search "collage archive"                  # search everything
+python run.py digest                                    # weekly summary of new items
+python run.py health                                    # check for dead links
+python run.py stats                                     # item/facet/edge counts
+python run.py export --format json --output items.json  # export rights-aware
 ```
 
 Credentials can be passed as flags or set as environment variables:
@@ -114,9 +115,18 @@ SPOON_RAINDROP_TOKEN, SPOON_READWISE_TOKEN,
 SPOON_TUMBLR_API_KEY, SPOON_TUMBLR_BLOG, SPOON_DB_PATH
 ```
 
-### 9. Test suite
+### 9. Export
 
-28 tests covering: query planner, local index service, enrichment pipeline, academic connector. All passing.
+`run.py export` writes the database to JSON or CSV, respecting rights:
+- Items with `can_export: false` or `export_policy: "none"` are skipped.
+- Items with `export_policy: "abstract_only"` are included but their `fulltext` is stripped.
+- Items with empty rights default to fully exportable.
+
+Supports `--connector NAME` and `--limit N` filters. `--output PATH` writes to a file; default is stdout.
+
+### 10. Test suite
+
+33 tests covering: query planner, local index service, enrichment pipeline, academic connector, export rights filtering. All passing.
 
 ---
 
@@ -132,9 +142,11 @@ SPOON_TUMBLR_API_KEY, SPOON_TUMBLR_BLOG, SPOON_DB_PATH
 
 **What does not exist yet:**
 - A web or desktop UI (the query planner and ranking sliders are designed for one, but nothing renders them)
-- An export command (the rights/export machinery exists in storage, but there's no `run.py export` subcommand)
 - A way to re-enrich existing items without re-ingesting them
 - Any connection between the query planner's connector routing and the actual connector calls in `run.py` — right now `run.py ingest` targets one source at a time; the planner's multi-source fan-out is not wired to anything
+
+**Known bugs:**
+- `--limit N` on `python run.py ingest readwise` is ignored — the connector pulls its default page size (100) regardless. Likely also affects raindrop/tumblr/internet_archive; not yet investigated.
 
 ---
 
@@ -145,13 +157,10 @@ Listed roughly in order of payoff:
 ### A. Test with real credentials (low effort, high value)
 Run `python run.py ingest raindrop --token YOUR_TOKEN` or `readwise` from your Mac terminal. This will immediately tell you whether the connectors work and put real content in the database to search against. No code changes needed.
 
-### B. Add an `export` subcommand to the CLI (small coding task)
-The storage layer already supports export — it just needs a `run.py export` command that queries `normalized_items` respecting `rights.can_export` and writes to JSON or CSV. One afternoon of work for a code agent.
-
-### C. Wire the query planner to `run.py search` (medium coding task)
+### B. Wire the query planner to `run.py search` (medium coding task)
 Right now `run.py search` just searches whatever is in the database. The query planner knows which connector groups to prioritise for a given query — connecting the two would make search intent-aware. The planner is in `query_planner.py` and is well-documented.
 
-### D. Build a minimal web UI (larger task — design decisions required)
+### C. Build a minimal web UI (larger task — design decisions required)
 The ranking sliders and search mode presets in `query_planner.py` are explicitly designed for a UI. A simple local web interface (Flask or FastAPI serving a single HTML page) could expose:
 - A search box
 - The three ranking sliders
@@ -160,7 +169,7 @@ The ranking sliders and search mode presets in `query_planner.py` are explicitly
 
 This would make the system genuinely usable day-to-day without touching the terminal.
 
-### E. Add more connectors (open-ended)
+### D. Add more connectors (open-ended)
 The connector pattern is straightforward: implement `fetch_items(limit)` and `normalize_item(raw)` in a class that inherits from `BaseConnector`. Candidates: Are.na, Pinboard, Zotero, Notion, Obsidian vault, email newsletters.
 
 ---

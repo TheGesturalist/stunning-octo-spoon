@@ -7,9 +7,11 @@ Usage:
     python run.py digest [options]
     python run.py health [options]
     python run.py stats [options]
+    python run.py export [options]
 """
 from __future__ import annotations
 import argparse
+import csv
 import json
 import re
 import sqlite3
@@ -296,6 +298,108 @@ def cmd_stats(args: argparse.Namespace) -> None:
     print(f"\nEnrichment facets: {total_facets}")
     print(f"Graph edges:       {total_edges}")
     print(f"Provenance events: {total_events}")
+def _iter_exportable_items(db_path: str, connector: str | None, limit: int | None):
+    """Yield (row_dict, rights) tuples for items whose rights permit export.
+
+    Empty rights default to fully exportable, matching _load_documents_from_db.
+    Non-empty rights must include can_export=True; export_policy="none" is dropped;
+    export_policy="abstract_only" causes the caller to strip fulltext.
+    """
+    sql = (
+        "SELECT connector, source_id, source_url, title, author, summary, "
+        "fulltext, content_type, language, created_at, updated_at, "
+        "tags_json, metadata_json, rights_json FROM normalized_items"
+    )
+    params: list[object] = []
+    if connector:
+        sql += " WHERE connector = ?"
+        params.append(connector)
+    sql += " ORDER BY created_at DESC, source_id"
+    if limit is not None:
+        sql += " LIMIT ?"
+        params.append(limit)
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        for row in conn.execute(sql, params):
+            rights_raw = row["rights_json"] or ""
+            rights = json.loads(rights_raw) if rights_raw else {}
+            if rights:
+                if not rights.get("can_export", False):
+                    continue
+                if rights.get("export_policy") == "none":
+                    continue
+            else:
+                rights = {
+                    "allow_abstract": True,
+                    "allow_fulltext": True,
+                    "can_export": True,
+                    "export_policy": "full",
+                }
+            yield row, rights
+def _build_export_record(row, rights: dict) -> dict:
+    policy = rights.get("export_policy", "full")
+    include_fulltext = policy != "abstract_only" and rights.get("allow_fulltext", True)
+    include_summary = rights.get("allow_abstract", True)
+    return {
+        "connector": row["connector"],
+        "source_id": row["source_id"],
+        "source_url": row["source_url"],
+        "title": row["title"],
+        "author": row["author"],
+        "summary": row["summary"] if include_summary else None,
+        "fulltext": row["fulltext"] if include_fulltext else None,
+        "content_type": row["content_type"],
+        "language": row["language"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+        "tags": json.loads(row["tags_json"] or "[]"),
+        "metadata": json.loads(row["metadata_json"] or "{}"),
+        "rights": rights,
+    }
+def cmd_export(args: argparse.Namespace) -> None:
+    db = args.db
+    records = (
+        _build_export_record(row, rights)
+        for row, rights in _iter_exportable_items(db, args.connector, args.limit)
+    )
+    use_stdout = not args.output or args.output == "-"
+    if use_stdout:
+        out = sys.stdout
+        close_after = False
+    else:
+        out = open(args.output, "w", encoding="utf-8", newline="")
+        close_after = True
+    try:
+        count = 0
+        if args.format == "csv":
+            fieldnames = [
+                "connector", "source_id", "source_url", "title", "author",
+                "summary", "fulltext", "content_type", "language",
+                "created_at", "updated_at", "tags", "metadata", "rights",
+            ]
+            writer = csv.DictWriter(out, fieldnames=fieldnames)
+            writer.writeheader()
+            for rec in records:
+                rec["tags"] = json.dumps(rec["tags"], ensure_ascii=False)
+                rec["metadata"] = json.dumps(rec["metadata"], ensure_ascii=False)
+                rec["rights"] = json.dumps(rec["rights"], ensure_ascii=False)
+                writer.writerow(rec)
+                count += 1
+        else:
+            out.write("[\n")
+            first = True
+            for rec in records:
+                if not first:
+                    out.write(",\n")
+                out.write("  " + json.dumps(rec, ensure_ascii=False))
+                first = False
+                count += 1
+            out.write("\n]\n")
+    finally:
+        if close_after:
+            out.close()
+    if not use_stdout:
+        print(f"Exported {count} item(s) to {args.output}", file=sys.stderr)
 # ---------------------------------------------------------------------------
 # Argument parser
 # ---------------------------------------------------------------------------
@@ -341,6 +445,13 @@ def build_parser() -> argparse.ArgumentParser:
     # -- stats --
     p_stats = sub.add_parser("stats", help="Show database statistics")
     p_stats.add_argument("--db", default=config.db_path(), metavar="PATH", help="Database path")
+    # -- export --
+    p_export = sub.add_parser("export", help="Export items as JSON or CSV (respects rights)")
+    p_export.add_argument("--db", default=config.db_path(), metavar="PATH", help="Database path")
+    p_export.add_argument("--format", choices=["json", "csv"], default="json", help="Output format")
+    p_export.add_argument("--output", "-o", metavar="PATH", help="Output file (default: stdout)")
+    p_export.add_argument("--connector", metavar="NAME", help="Restrict to a single connector")
+    p_export.add_argument("--limit", type=int, metavar="N", help="Max items to export")
     return parser
 def main() -> None:
     parser = build_parser()
@@ -352,6 +463,7 @@ def main() -> None:
         "digest": cmd_digest,
         "health": cmd_health,
         "stats": cmd_stats,
+        "export": cmd_export,
     }
     dispatch[args.command](args)
 if __name__ == "__main__":
