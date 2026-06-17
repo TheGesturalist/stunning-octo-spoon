@@ -29,7 +29,7 @@ class RaindropIOConnector(BaseConnector):
             f"?perpage={limit}&page={page}"
         )
         payload = get_json(url, headers=self._headers)
-        return payload.get("items", [])
+        return payload.get("items", [])[:limit]
 
     def fetch_fulltext(self, item: dict[str, Any]) -> str | None:
         highlights = item.get("highlights") or []

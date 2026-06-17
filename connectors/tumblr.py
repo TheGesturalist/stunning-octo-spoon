@@ -23,7 +23,7 @@ class TumblrConnector(BaseConnector):
             f"?api_key={self.api_key}&limit={limit}&offset={offset}"
         )
         payload = get_json(url)
-        return payload.get("response", {}).get("posts", [])
+        return payload.get("response", {}).get("posts", [])[:limit]
 
     def fetch_fulltext(self, item: dict[str, Any]) -> str | None:
         body = item.get("body") or item.get("caption")

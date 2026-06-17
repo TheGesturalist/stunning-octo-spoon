@@ -24,10 +24,12 @@ class ReaderIOConnector(BaseConnector):
         return {"Authorization": f"Token {self.api_token}"}
 
     def fetch_items(self, cursor: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
-        next_page = f"&pageCursor={cursor}" if cursor else ""
-        url = f"{self.base_url}/list/?page_size={limit}{next_page}"
+        # Reader v3 ignores page_size; the server always returns its default page (100).
+        # Cap client-side so --limit is honored.
+        next_page = f"?pageCursor={cursor}" if cursor else ""
+        url = f"{self.base_url}/list/{next_page}"
         payload = get_json(url, headers=self._headers)
-        return payload.get("results", [])
+        return payload.get("results", [])[:limit]
 
     def fetch_fulltext(self, item: dict[str, Any]) -> str | None:
         text = item.get("text")

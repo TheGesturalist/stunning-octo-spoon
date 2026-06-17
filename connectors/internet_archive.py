@@ -25,7 +25,7 @@ class InternetArchiveConnector(BaseConnector):
             f"&rows={limit}&page={page}&output=json"
         )
         payload = get_json(url)
-        return payload.get("response", {}).get("docs", [])
+        return payload.get("response", {}).get("docs", [])[:limit]
 
     def fetch_fulltext(self, item: dict[str, Any]) -> str | None:
         identifier = item.get("identifier")
