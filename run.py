@@ -8,14 +8,17 @@ Usage:
     python run.py health [options]
     python run.py stats [options]
     python run.py export [options]
+    python run.py serve [options]
 """
 from __future__ import annotations
 import argparse
 import csv
+import http.server
 import json
 import re
 import sqlite3
 import sys
+import urllib.parse
 from pathlib import Path
 import config
 from connectors.storage import (
@@ -401,6 +404,216 @@ def cmd_export(args: argparse.Namespace) -> None:
     if not use_stdout:
         print(f"Exported {count} item(s) to {args.output}", file=sys.stderr)
 # ---------------------------------------------------------------------------
+# Web UI
+# ---------------------------------------------------------------------------
+_INDEX_HTML = """<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>stunning-octo-spoon</title>
+<style>
+:root {
+  color-scheme: light dark;
+  --bg: #fafaf7; --fg: #1a1a1a; --muted: #666; --accent: #2a5d8f;
+  --card: #fff; --border: #e4e4e0; --badge: #efeee9; --mark: #ffe680;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #16171a; --fg: #e8e8e6; --muted: #999; --accent: #7ab1e6;
+    --card: #1d1e22; --border: #2c2d31; --badge: #2c2d31; --mark: #6a5b1f;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; padding: 0; background: var(--bg); color: var(--fg);
+       font: 15px/1.5 -apple-system, system-ui, sans-serif; }
+header { padding: 20px 24px; border-bottom: 1px solid var(--border); }
+h1 { margin: 0; font-size: 18px; font-weight: 600; }
+.meta { color: var(--muted); font-size: 13px; margin-top: 4px; }
+main { max-width: 920px; margin: 0 auto; padding: 24px; }
+.controls { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 20px; }
+#q { flex: 1; min-width: 240px; padding: 10px 12px; font: inherit;
+     background: var(--card); color: var(--fg);
+     border: 1px solid var(--border); border-radius: 6px; }
+#q:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+select, button { padding: 10px 12px; font: inherit;
+                 background: var(--card); color: var(--fg);
+                 border: 1px solid var(--border); border-radius: 6px; }
+button { cursor: pointer; background: var(--accent); color: #fff; border-color: var(--accent); }
+button:hover { opacity: 0.9; }
+.status { color: var(--muted); font-size: 13px; margin-bottom: 12px; }
+.card { background: var(--card); border: 1px solid var(--border);
+        border-radius: 8px; padding: 16px 18px; margin-bottom: 12px; }
+.card h2 { margin: 0 0 6px; font-size: 16px; font-weight: 600; }
+.card h2 a { color: var(--fg); text-decoration: none; }
+.card h2 a:hover { color: var(--accent); }
+.badge { display: inline-block; padding: 2px 8px; font-size: 11px;
+         background: var(--badge); color: var(--muted); border-radius: 4px;
+         margin-left: 8px; vertical-align: middle; }
+.snippet { margin: 8px 0; color: var(--fg); }
+.snippet mark { background: var(--mark); padding: 0 2px; border-radius: 2px; }
+.explanations, .neighbors { font-size: 13px; color: var(--muted); margin-top: 6px; }
+.explanations div::before { content: "→ "; }
+.neighbors strong { font-weight: 500; color: var(--fg); }
+.source { font-size: 12px; color: var(--muted); }
+.source a { color: var(--muted); }
+.empty { color: var(--muted); text-align: center; padding: 40px 20px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>stunning-octo-spoon</h1>
+  <div class="meta" id="meta">loading…</div>
+</header>
+<main>
+  <form class="controls" id="form">
+    <input id="q" name="q" type="text" placeholder="Search your library…" autofocus>
+    <select id="connector" name="connector"><option value="">all sources</option></select>
+    <select id="limit" name="limit">
+      <option value="10">10 results</option>
+      <option value="20" selected>20 results</option>
+      <option value="50">50 results</option>
+    </select>
+    <button type="submit">Search</button>
+  </form>
+  <div class="status" id="status"></div>
+  <div id="results"><div class="empty">Type a query above to search your library.</div></div>
+</main>
+<script>
+const $ = (s) => document.querySelector(s);
+const esc = (s) => (s || "").replace(/[&<>"]/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+async function init() {
+  const r = await fetch("/api/connectors").then((r) => r.json());
+  $("#meta").textContent = `${r.total_items.toLocaleString()} items · ${r.connectors.map((c) => `${c.name} (${c.count.toLocaleString()})`).join(" · ")}`;
+  for (const c of r.connectors) {
+    const o = document.createElement("option");
+    o.value = c.name; o.textContent = `${c.name} (${c.count.toLocaleString()})`;
+    $("#connector").appendChild(o);
+  }
+}
+function renderCard(card) {
+  const connector = (card.doc_id || "").split(":")[0] || "?";
+  const neighbors = (card.semantic_neighbors || []).map((n) => esc(n.title)).join(", ");
+  const explanations = (card.match_explanations || []).map((e) => `<div>${esc(e)}</div>`).join("");
+  return `
+    <div class="card">
+      <h2><a href="${esc(card.source)}" target="_blank" rel="noopener">${esc(card.title)}</a><span class="badge">${esc(connector)}</span></h2>
+      <div class="source"><a href="${esc(card.source)}" target="_blank" rel="noopener">${esc(card.source)}</a></div>
+      <div class="snippet">${card.snippet_highlight || ""}</div>
+      ${explanations ? `<div class="explanations">${explanations}</div>` : ""}
+      ${neighbors ? `<div class="neighbors"><strong>Similar:</strong> ${neighbors}</div>` : ""}
+    </div>`;
+}
+async function search(e) {
+  if (e) e.preventDefault();
+  const q = $("#q").value.trim();
+  if (!q) return;
+  $("#status").textContent = "Searching…";
+  $("#results").innerHTML = "";
+  const params = new URLSearchParams({ q, limit: $("#limit").value });
+  const connector = $("#connector").value;
+  if (connector) params.set("connector", connector);
+  const t0 = performance.now();
+  const r = await fetch("/api/search?" + params.toString()).then((r) => r.json());
+  const ms = Math.round(performance.now() - t0);
+  if (r.error) {
+    $("#status").textContent = `Error: ${r.error}`;
+    return;
+  }
+  $("#status").textContent = `${r.results.length} result(s) in ${ms} ms for "${q}"`;
+  if (r.results.length === 0) {
+    $("#results").innerHTML = `<div class="empty">No results.</div>`;
+    return;
+  }
+  $("#results").innerHTML = r.results.map(renderCard).join("");
+}
+$("#form").addEventListener("submit", search);
+init();
+</script>
+</body>
+</html>
+"""
+def _result_card_to_dict(card) -> dict:
+    return {
+        "doc_id": card.doc_id,
+        "title": card.title,
+        "source": card.source,
+        "snippet_highlight": card.snippet_highlight,
+        "match_explanations": list(card.match_explanations or []),
+        "semantic_neighbors": [
+            {"doc_id": n.doc_id, "title": n.title, "similarity": n.similarity}
+            for n in (card.semantic_neighbors or [])
+        ],
+    }
+def _make_handler(service: LocalIndexService, indexes: dict[str, list]):
+    connector_counts = sorted(
+        ({"name": name, "count": len(docs)} for name, docs in indexes.items()),
+        key=lambda c: c["count"],
+        reverse=True,
+    )
+    total_items = sum(len(docs) for docs in indexes.values())
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, format, *args):  # noqa: A002 — matches parent signature
+            sys.stderr.write(f"[serve] {format % args}\n")
+        def _send_json(self, status: int, body: dict) -> None:
+            data = json.dumps(body).encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+        def do_GET(self):
+            parsed = urllib.parse.urlsplit(self.path)
+            path = parsed.path
+            if path == "/":
+                body = _INDEX_HTML.encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            if path == "/api/connectors":
+                self._send_json(200, {"total_items": total_items, "connectors": connector_counts})
+                return
+            if path == "/api/search":
+                params = urllib.parse.parse_qs(parsed.query)
+                q = (params.get("q") or [""])[0].strip()
+                if not q:
+                    self._send_json(400, {"error": "missing q"})
+                    return
+                try:
+                    limit = int((params.get("limit") or ["20"])[0])
+                except ValueError:
+                    limit = 20
+                connector = (params.get("connector") or [""])[0].strip() or None
+                index_filter = [connector] if connector else None
+                try:
+                    results = service.query(q, indexes=index_filter, limit=limit)
+                except Exception as exc:
+                    self._send_json(500, {"error": str(exc)})
+                    return
+                self._send_json(200, {"results": [_result_card_to_dict(c) for c in results]})
+                return
+            self._send_json(404, {"error": "not found"})
+    return Handler
+def cmd_serve(args: argparse.Namespace) -> None:
+    print(f"Loading documents from {args.db}…", file=sys.stderr)
+    indexes = _load_documents_from_db(args.db)
+    if not indexes:
+        print("No items in the database. Run 'python run.py ingest ...' first.", file=sys.stderr)
+        sys.exit(1)
+    service = LocalIndexService(indexes)
+    total = sum(len(docs) for docs in indexes.values())
+    handler_cls = _make_handler(service, indexes)
+    server = http.server.HTTPServer((args.host, args.port), handler_cls)
+    url = f"http://{args.host}:{args.port}/"
+    print(f"Serving {total} item(s) at {url} — Ctrl-C to stop.", file=sys.stderr)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\nStopping.", file=sys.stderr)
+        server.server_close()
+# ---------------------------------------------------------------------------
 # Argument parser
 # ---------------------------------------------------------------------------
 def build_parser() -> argparse.ArgumentParser:
@@ -452,6 +665,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_export.add_argument("--output", "-o", metavar="PATH", help="Output file (default: stdout)")
     p_export.add_argument("--connector", metavar="NAME", help="Restrict to a single connector")
     p_export.add_argument("--limit", type=int, metavar="N", help="Max items to export")
+    # -- serve --
+    p_serve = sub.add_parser("serve", help="Launch the local web UI")
+    p_serve.add_argument("--db", default=config.db_path(), metavar="PATH", help="Database path")
+    p_serve.add_argument("--host", default="127.0.0.1", metavar="HOST", help="Bind host (default: 127.0.0.1)")
+    p_serve.add_argument("--port", type=int, default=8080, metavar="PORT", help="Bind port (default: 8080)")
     return parser
 def main() -> None:
     parser = build_parser()
@@ -464,6 +682,7 @@ def main() -> None:
         "health": cmd_health,
         "stats": cmd_stats,
         "export": cmd_export,
+        "serve": cmd_serve,
     }
     dispatch[args.command](args)
 if __name__ == "__main__":

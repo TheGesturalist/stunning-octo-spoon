@@ -106,6 +106,7 @@ python run.py digest                                    # weekly summary of new 
 python run.py health                                    # check for dead links
 python run.py stats                                     # item/facet/edge counts
 python run.py export --format json --output items.json  # export rights-aware
+python run.py serve --port 8080                         # local web UI at http://127.0.0.1:8080
 ```
 
 Credentials can be passed as flags or set as environment variables:
@@ -115,7 +116,18 @@ SPOON_RAINDROP_TOKEN, SPOON_READWISE_TOKEN,
 SPOON_TUMBLR_API_KEY, SPOON_TUMBLR_BLOG, SPOON_DB_PATH
 ```
 
-### 9. Export
+### 9. Web UI (v1)
+
+`run.py serve [--host H] [--port N]` launches a local HTTP server (stdlib `http.server`, no extra deps) that renders a single-page search UI:
+- Search box + connector filter (all sources / raindrop_io / reader_io) + result-count selector
+- Result cards: title (links to source), connector badge, highlighted snippet, match explanations, similar-item titles
+- Two JSON endpoints: `GET /api/connectors`, `GET /api/search?q=...&connector=...&limit=N`
+- Dark mode follows `prefers-color-scheme`
+- Binds to `127.0.0.1:8080` by default
+
+v1 is deliberately minimal — the planner's ranking sliders and search-mode presets are not wired (see "What does not exist yet" below).
+
+### 10. Export
 
 `run.py export` writes the database to JSON or CSV, respecting rights:
 - Items with `can_export: false` or `export_policy: "none"` are skipped.
@@ -124,7 +136,7 @@ SPOON_TUMBLR_API_KEY, SPOON_TUMBLR_BLOG, SPOON_DB_PATH
 
 Supports `--connector NAME` and `--limit N` filters. `--output PATH` writes to a file; default is stdout.
 
-### 10. Test suite
+### 11. Test suite
 
 33 tests covering: query planner, local index service, enrichment pipeline, academic connector, export rights filtering. All passing.
 
@@ -141,7 +153,7 @@ Supports `--connector NAME` and `--limit N` filters. `--output PATH` writes to a
 - All API connectors (Raindrop, Readwise, Tumblr, Internet Archive) — the code is there but hasn't been run against real credentials in this environment
 
 **What does not exist yet:**
-- A web or desktop UI (the query planner and ranking sliders are designed for one, but nothing renders them)
+- The query planner is not yet wired to `run.py search` or to the web UI — its ranking sliders and search-mode presets (seed_and_mutate, contrarian, time_tunnel, materiality) are designed but unreachable. v2 of the web UI will expose these once the wiring lands.
 - A way to re-enrich existing items without re-ingesting them
 - Any connection between the query planner's connector routing and the actual connector calls in `run.py` — right now `run.py ingest` targets one source at a time; the planner's multi-source fan-out is not wired to anything
 
@@ -160,14 +172,8 @@ Run `python run.py ingest raindrop --token YOUR_TOKEN` or `readwise` from your M
 ### B. Wire the query planner to `run.py search` (medium coding task)
 Right now `run.py search` just searches whatever is in the database. The query planner knows which connector groups to prioritise for a given query — connecting the two would make search intent-aware. The planner is in `query_planner.py` and is well-documented.
 
-### C. Build a minimal web UI (larger task — design decisions required)
-The ranking sliders and search mode presets in `query_planner.py` are explicitly designed for a UI. A simple local web interface (Flask or FastAPI serving a single HTML page) could expose:
-- A search box
-- The three ranking sliders
-- Mode preset buttons (seed_and_mutate, contrarian, etc.)
-- Result cards with snippet highlights and similar-item links
-
-This would make the system genuinely usable day-to-day without touching the terminal.
+### C. Web UI v2 — wire planner, sliders, modes
+v1 (search box + connector filter + result cards) ships in `run.py serve`. v2 expands it to expose the query planner's intent routing, ranking sliders (Relevant↔Surprising, Focused↔Diverse, Recent↔Timeless), and mode presets (seed_and_mutate, contrarian, time_tunnel, materiality). Depends on the planner being wired to the search backend first (Step B).
 
 ### D. Add more connectors (open-ended)
 The connector pattern is straightforward: implement `fetch_items(limit)` and `normalize_item(raw)` in a class that inherits from `BaseConnector`. Candidates: Are.na, Pinboard, Zotero, Notion, Obsidian vault, email newsletters.
