@@ -16,7 +16,7 @@ import re
 from typing import Dict, Iterable, List, Mapping, MutableMapping, Sequence
 
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)Â
 
 
 class QueryIntent(str, Enum):
