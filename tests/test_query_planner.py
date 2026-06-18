@@ -1,10 +1,26 @@
 import unittest
 
 from query_planner import (
+    DiscoveryItem,
+    InteractionEvent,
+    InteractionEventType,
     PlannerToggles,
     QueryIntent,
+    RankCandidate,
+    RankingSliders,
+    SearchMode,
+    UserPreferenceVector,
+    apply_synchronized_selection,
+    build_synchronized_views,
     classify_query_intent,
+    compute_rank_weights,
+    apply_query_constraints,
+    get_search_mode_presets,
+    parse_constrained_query,
     plan_query,
+    rank_candidates,
+    ranking_slider_config,
+    update_user_preference_vector_from_events,
 )
 
 
@@ -36,6 +52,237 @@ class QueryPlannerTests(unittest.TestCase):
             toggles=PlannerToggles(fast_search=True),
         )
         self.assertEqual(len(decision.connector_groups), 2)
+
+    def test_seed_and_mutate_mode_adds_branching_instruction(self):
+        decision = plan_query(
+            "Start from this saved note about punk zines",
+            mode=SearchMode.SEED_AND_MUTATE,
+        )
+        self.assertIn("bookmarks", decision.connector_groups)
+        self.assertTrue(decision.search_instructions)
+
+    def test_contrarian_mode_adds_opposing_lenses(self):
+        decision = plan_query(
+            "Minimalist web design references",
+            mode=SearchMode.CONTRARIAN,
+        )
+        self.assertIn("academic_databases", decision.connector_groups)
+        self.assertIn("tumblr", decision.connector_groups)
+
+    def test_time_tunnel_mode_adds_temporal_coverage_instruction(self):
+        decision = plan_query(
+            "Typeface politics",
+            mode=SearchMode.TIME_TUNNEL,
+        )
+        self.assertIn("internet_archive", decision.connector_groups)
+        self.assertTrue(
+            any("decades" in instruction for instruction in decision.search_instructions)
+        )
+
+    def test_materiality_mode_prioritizes_archival_sources(self):
+        decision = plan_query(
+            "Dada collage references",
+            mode=SearchMode.MATERIALITY,
+        )
+        self.assertEqual(decision.connector_groups[0], "internet_archive")
+
+    def test_exposes_four_ui_mode_presets(self):
+        presets = get_search_mode_presets()
+        self.assertGreaterEqual(len(presets), 4)
+        preset_modes = {preset.mode for preset in presets}
+        self.assertIn(SearchMode.SEED_AND_MUTATE, preset_modes)
+        self.assertIn(SearchMode.CONTRARIAN, preset_modes)
+        self.assertIn(SearchMode.TIME_TUNNEL, preset_modes)
+        self.assertIn(SearchMode.MATERIALITY, preset_modes)
+
+    def test_ranking_slider_config_contains_all_controls(self):
+        config = ranking_slider_config()
+        self.assertIn("relevant_surprising", config)
+        self.assertIn("focused_diverse", config)
+        self.assertIn("recent_timeless", config)
+
+    def test_interactions_update_user_preference_vector(self):
+        vector = update_user_preference_vector_from_events(
+            [
+                InteractionEvent(
+                    event_type=InteractionEventType.SAVED,
+                    topics=("typography",),
+                    source_id="internet_archive",
+                    visual_style="brutalist",
+                ),
+                InteractionEvent(
+                    event_type=InteractionEventType.SKIPPED,
+                    topics=("minimalism",),
+                    source_id="pinterest",
+                    visual_style="minimalist",
+                ),
+            ]
+        )
+        self.assertGreater(vector.topic_preferences["typography"], 0.0)
+        self.assertLess(vector.topic_preferences["minimalism"], 0.0)
+        self.assertGreater(vector.source_trust["internet_archive"], 0.0)
+        self.assertLess(vector.source_trust["pinterest"], 0.0)
+
+    def test_preference_vector_feeds_into_rank_weights(self):
+        base = compute_rank_weights(RankingSliders())
+        vector = UserPreferenceVector(
+            topic_preferences={"punk": 0.6},
+            source_trust={"internet_archive": 0.5},
+            visual_style_preferences={"collage": 0.7},
+        )
+        personalized = compute_rank_weights(RankingSliders(), vector)
+        self.assertGreater(personalized["topic_preference"], base["topic_preference"])
+        self.assertGreater(personalized["source_trust"], base["source_trust"])
+
+    def test_rank_candidates_uses_personalization_scores(self):
+        sliders = RankingSliders(relevant_surprising=0.7, focused_diverse=0.4, recent_timeless=0.5)
+        vector = update_user_preference_vector_from_events(
+            [
+                InteractionEvent(
+                    event_type=InteractionEventType.COLLECTION_ADDED,
+                    topics=("zines",),
+                    source_id="internet_archive",
+                    visual_style="collage",
+                )
+            ]
+        )
+        ranked = rank_candidates(
+            [
+                RankCandidate(
+                    candidate_id="a",
+                    lexical_score=0.7,
+                    semantic_score=0.7,
+                    recency_score=0.4,
+                    novelty_score=0.4,
+                    source_id="internet_archive",
+                    topics=("zines", "punk"),
+                    visual_style="collage",
+                ),
+                RankCandidate(
+                    candidate_id="b",
+                    lexical_score=0.75,
+                    semantic_score=0.75,
+                    recency_score=0.4,
+                    novelty_score=0.4,
+                    source_id="pinterest",
+                    topics=("interiors",),
+                    visual_style="minimalist",
+                ),
+            ],
+            sliders=sliders,
+            preference_vector=vector,
+        )
+        self.assertEqual(ranked[0].candidate.candidate_id, "a")
+
+    def test_build_synchronized_views_creates_ranked_graph_and_moodboard_views(self):
+        items = [
+            DiscoveryItem(
+                item_id="a",
+                title="Bauhaus poster grid",
+                score=0.92,
+                related_item_ids=("b", "c"),
+                visual_bucket="typography",
+            ),
+            DiscoveryItem(
+                item_id="b",
+                title="Swiss type specimen",
+                score=0.88,
+                related_item_ids=("a",),
+                visual_bucket="typography",
+            ),
+            DiscoveryItem(
+                item_id="c",
+                title="Ink texture scan",
+                score=0.67,
+                related_item_ids=("a",),
+                visual_bucket="materials",
+            ),
+        ]
+
+        views = build_synchronized_views(items, selected_item_id="a")
+        self.assertEqual([entry.item_id for entry in views.ranked_list], ["a", "b", "c"])
+        self.assertEqual(len(views.graph_nodes), 3)
+        self.assertEqual(len(views.graph_edges), 2)
+        self.assertEqual(len(views.moodboard_cards), 3)
+        self.assertEqual(set(views.highlighted_item_ids), {"a", "b", "c"})
+        self.assertTrue(all(card.is_highlighted for card in views.moodboard_cards))
+        self.assertTrue(all(node.is_highlighted for node in views.graph_nodes))
+
+    def test_selection_from_any_view_recomputes_cross_view_highlighting(self):
+        items = [
+            DiscoveryItem(item_id="a", title="Primary", score=0.9, related_item_ids=("b",)),
+            DiscoveryItem(item_id="b", title="Secondary", score=0.7, related_item_ids=("a",)),
+            DiscoveryItem(item_id="c", title="Independent", score=0.6, related_item_ids=()),
+        ]
+
+        views = build_synchronized_views(items)
+        selected = apply_synchronized_selection(views, items, item_id="b")
+        highlighted_ranked_ids = {
+            entry.item_id for entry in selected.ranked_list if entry.is_highlighted
+        }
+        highlighted_moodboard_ids = {
+            card.item_id for card in selected.moodboard_cards if card.is_highlighted
+        }
+
+        self.assertEqual(selected.selected_item_id, "b")
+        self.assertEqual(highlighted_ranked_ids, {"a", "b"})
+        self.assertEqual(highlighted_moodboard_ids, {"a", "b"})
+        self.assertTrue(
+            any(
+                edge.is_highlighted
+                for edge in selected.graph_edges
+                if {edge.source_item_id, edge.target_item_id} == {"a", "b"}
+            )
+        )
+
+    def test_parses_advanced_constrained_query_syntax(self):
+        parsed = parse_constrained_query(
+            "archive collage source:internet_archive -source:tumblr tag:scan -tag:ad"
+        )
+        self.assertEqual(parsed.plain_query, "archive collage")
+        self.assertEqual(parsed.constraints.source_includes, ("internet_archive",))
+        self.assertEqual(parsed.constraints.source_excludes, ("tumblr",))
+        self.assertEqual(parsed.constraints.required_tags, ("scan",))
+        self.assertEqual(parsed.constraints.excluded_tags, ("ad",))
+
+    def test_applies_constraints_for_curation_workflows(self):
+        parsed = parse_constrained_query("archive source:internet_archive -tag:ad")
+        constrained = apply_query_constraints(
+            [
+                RankCandidate(
+                    candidate_id="good",
+                    lexical_score=0.5,
+                    semantic_score=0.4,
+                    recency_score=0.3,
+                    novelty_score=0.2,
+                    source_id="internet_archive",
+                    topics=("archive", "design"),
+                    tags=("scan",),
+                ),
+                RankCandidate(
+                    candidate_id="bad-source",
+                    lexical_score=0.5,
+                    semantic_score=0.4,
+                    recency_score=0.3,
+                    novelty_score=0.2,
+                    source_id="tumblr",
+                    topics=("archive",),
+                    tags=("scan",),
+                ),
+                RankCandidate(
+                    candidate_id="bad-tag",
+                    lexical_score=0.5,
+                    semantic_score=0.4,
+                    recency_score=0.3,
+                    novelty_score=0.2,
+                    source_id="internet_archive",
+                    topics=("archive",),
+                    tags=("ad",),
+                ),
+            ],
+            parsed.constraints,
+        )
+        self.assertEqual([candidate.candidate_id for candidate in constrained], ["good"])
 
 
 if __name__ == "__main__":
