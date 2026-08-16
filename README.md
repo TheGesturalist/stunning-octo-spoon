@@ -19,12 +19,17 @@ Pure Python 3.10+ standard library; `unittest` only; no API keys required.
 
 Quick start:
 ```bash
-python3 run.py serve                          # web UI at http://localhost:8080
+python3 run.py serve --port 8090              # web UI at http://localhost:8090
 python3 run.py sources                        # every searchable source + its bang
 python3 run.py websearch "cartography"        # library + live web, ranked together
 python3 run.py websearch '!wphd deletion'     # one constrained source, via its bang
+python3 run.py websearch "maps" --mode time_tunnel   # exploratory search modes
 python3 run.py search "cartography" --indexes arena   # library only
 ```
+
+> Run on **8090**, not spoon's default 8080: the cloudflared tunnel maps
+> `library.bluebear.one` to `localhost:8080`, so anything bound there is
+> published at that hostname instead of Calibre.
 
 ## Live search sources
 
@@ -82,17 +87,22 @@ This repository now includes a `query_planner` module for routing search queries
 - `fast_search`: trims connector fan-out to top connectors for lower latency.
 - `visual_only`: forces visual connector routing.
 
-### Search mode presets (one-click UI modes)
+### Search mode presets
 
-The planner also supports mode presets designed for one-click selection in a search UI:
+`query_planner` declares the presets; **`search_modes.py` is what makes them
+act.** Each translates into concrete operations the federated search performs —
+widen the source set, move the sliders, add a query pass, re-rank the union:
 
-- `seed_and_mutate`: start from one URL/image/note and evolve related paths.
-- `contrarian`: intentionally surface opposing aesthetics/arguments.
-- `time_tunnel`: follow the same concept across decades.
-- `materiality`: prioritize scans, marginalia, ephemera, and archives.
+| Mode | Behavior |
+|---|---|
+| `seed_and_mutate` | Searches, mines terms shared by ≥2 of its own results, searches again on those. Novelty up. |
+| `contrarian` | Diversity forced to 1.0, adds academic sources, second pass on critique/debate terms. |
+| `time_tunnel` | Recency weighting to 0, adds long-reach sources, re-ranks round-robin across decades. |
+| `materiality` | Adds and up-weights image/archive sources; promotes scans, images and collections. |
 
-Use `get_search_mode_presets()` to render preset labels/descriptions in the UI, and pass
-the selected `SearchMode` into `plan_query(...)`.
+Available as `run.py websearch --mode <name>`, as buttons in the web UI, and in
+the static console. A mode only ever adds sources that exist, so it cannot
+promise coverage this build lacks.
 
 ### Debugging
 

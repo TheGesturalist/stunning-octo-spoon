@@ -52,11 +52,12 @@ flowchart TB
 
     CACHE[("web_cache_items<br/>TRANSIENT — never the corpus")]
     FED["federation.py<br/>concurrent fan-out · one scoring path<br/>length norm + MMR diversify"]
+    MODES["search_modes.py<br/>seed_and_mutate · contrarian<br/>time_tunnel · materiality"]
     QP["query_planner.py<br/>rank_candidates + sliders"]
 
     subgraph UI["run.py (CLI + web)"]
-        CLI["search · websearch · sources<br/>stats · digest · export · health"]
-        WEB["serve → :8080<br/>left nav · weights · /api/federated"]
+        CLI["search · websearch · sources<br/>stats · digest · export · export-index · health"]
+        WEB["serve → :8090<br/>left nav · weights · modes · /api/federated"]
     end
 
     USER(("You"))
@@ -89,6 +90,7 @@ flowchart TB
     P5 --> FED
     FED <--> CACHE
     QP --> FED
+    MODES --> FED
     FED --> CLI
     FED --> WEB
     IDX --> WEB
@@ -113,5 +115,10 @@ flowchart TB
   block contents come over the public REST API. Live search is channel-first
   because Are.na's block-search endpoint returns 403 to API clients. See
   [AGENTS.md §9](AGENTS.md).
+- **Search modes** (`search_modes.py`) sit beside the ranker: each preset widens
+  the source set, moves the sliders, may add a query pass, and may re-rank the
+  union. See [AGENTS.md](AGENTS.md) → "Search modes".
+- **`export-index`** writes a publishable subset of the corpus for the static
+  console; see `static_console/README.md`.
 - **`query_planner` is finally on a search path** — via `federation.py`. It is
   still not on the older `run.py search` path, which remains library-only.
