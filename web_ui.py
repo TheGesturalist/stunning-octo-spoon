@@ -24,7 +24,12 @@ from federation import federated_search, parse_bangs
 from local_index_service import IndexedDocument, LocalIndexService
 from providers import bang_map, default_selection, group_providers
 from providers.base import SearchProvider
-from query_planner import RankingSliders, get_search_mode_presets, ranking_slider_config
+from query_planner import (
+    RankingSliders,
+    SearchMode,
+    get_search_mode_presets,
+    ranking_slider_config,
+)
 
 PREF_KEY = "web_ui"
 MAX_POST_BYTES = 64 * 1024
@@ -232,6 +237,13 @@ def make_handler(
                 except (json.JSONDecodeError, TypeError, ValueError):
                     weights = {}
 
+            raw_mode = (params.get("mode") or ["standard"])[0].strip() or "standard"
+            try:
+                mode = SearchMode(raw_mode)
+            except ValueError:
+                self._send_json(400, {"error": f"unknown mode: {raw_mode}"})
+                return
+
             try:
                 response = federated_search(
                     plain_query or raw_query,
@@ -241,6 +253,8 @@ def make_handler(
                     limit=limit,
                     db_path=db_path,
                     library_urls=library_urls,
+                    mode=mode,
+                    all_providers=providers,
                 )
             except Exception as exc:  # noqa: BLE001
                 self._send_json(500, {"error": f"{type(exc).__name__}: {exc}"})
@@ -363,6 +377,14 @@ button.ghost:hover { color: var(--fg); }
 .wrow label { display: flex; justify-content: space-between; font-size: 11px;
               color: var(--muted); margin-bottom: 3px; }
 .wrow input[type=range] { width: 100%; accent-color: var(--accent); }
+.modes { }
+.mode-btn { display: block; width: 100%; text-align: left; margin-bottom: 4px; padding: 5px 9px;
+            font-size: 12px; background: var(--card); color: var(--fg); border: 1px solid var(--border); }
+.mode-btn:hover { border-color: var(--accent); }
+.mode-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.mode-btn small { display: block; font-size: 10.5px; opacity: .75; margin-top: 1px; }
+.mode-notes { font-size: 11.5px; color: var(--muted); margin-bottom: 10px;
+              border-left: 2px solid var(--accent); padding-left: 9px; }
 .dials { margin-top: 6px; }
 .dial { display: grid; grid-template-columns: 1fr auto; gap: 4px 8px; align-items: center;
         font-size: 12px; margin-bottom: 6px; }
@@ -418,7 +440,9 @@ details.computed pre { white-space: pre-wrap; word-break: break-word; margin: 6p
   <nav>
     <div id="nav"></div>
     <div class="weights">
-      <h2 style="font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:var(--dim);margin:0 0 9px;">Ranking weights</h2>
+      <h2 style="font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:var(--dim);margin:0 0 8px;">Search mode</h2>
+      <div id="modes"></div>
+      <h2 style="font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:var(--dim);margin:14px 0 9px;">Ranking weights</h2>
       <div id="sliders"></div>
       <div class="dials">
         <h2 style="font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:var(--dim);margin:12px 0 6px;">Source trust</h2>
@@ -437,6 +461,7 @@ details.computed pre { white-space: pre-wrap; word-break: break-word; margin: 6p
 
   <main>
     <div class="status" id="status"></div>
+    <div class="mode-notes" id="modeNotes"></div>
     <div class="outcomes" id="outcomes"></div>
     <div id="results"><div class="empty">Pick sources at left, type a query, hit Search.</div></div>
   </main>
@@ -448,6 +473,7 @@ const esc = (s) => (s == null ? "" : String(s)).replace(/[&<>"]/g,
   (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 
 let NAV = null;
+let mode = "standard";
 let selected = new Set();
 let dials = {};           // provider_id -> -1..1
 const sliders = { rs: 0.5, fd: 0.5, rt: 0.5 };
@@ -460,13 +486,27 @@ async function init() {
     selected = new Set(prefs.selected);
     Object.assign(sliders, prefs.sliders || {});
     dials = prefs.dials || {};
+    mode = prefs.mode || "standard";
   } else {
     selected = new Set(NAV.defaults);
   }
   $("#meta").textContent = `${NAV.total_items.toLocaleString()} items in library · ${countSources()} sources available`;
   renderNav();
+  renderModes();
   renderSliders();
   renderDials();
+}
+
+function renderModes() {
+  const all = [{ mode: "standard", label: "Standard", description: "Straight relevance ranking." },
+               ...(NAV.modes || [])];
+  $("#modes").innerHTML = all.map((m) => `
+    <button type="button" class="mode-btn ${m.mode === mode ? "active" : ""}" data-mode="${esc(m.mode)}">
+      ${esc(m.label)}<small>${esc(m.description)}</small>
+    </button>`).join("");
+  $("#modes").querySelectorAll("button").forEach((b) => {
+    b.addEventListener("click", () => { mode = b.dataset.mode; renderModes(); });
+  });
 }
 
 function countSources() {
@@ -595,7 +635,7 @@ async function search(e) {
   const activeDials = Object.fromEntries(Object.entries(dials).filter(([, v]) => v));
   const params = new URLSearchParams({
     q, limit: "25", sources: [...selected].join(","),
-    rs: sliders.rs, fd: sliders.fd, rt: sliders.rt,
+    rs: sliders.rs, fd: sliders.fd, rt: sliders.rt, mode,
   });
   if (Object.keys(activeDials).length) params.set("weights", JSON.stringify(activeDials));
 
@@ -616,6 +656,12 @@ async function search(e) {
   $("#status").textContent = `${r.results.length} result(s) in ${ms} ms for "${r.plain_query}"${bangNote}`;
   $("#computed").textContent = Object.entries(r.weights || {})
     .map(([k, v]) => `${k.padEnd(24, " ")} ${v.toFixed(4)}`).join("\n");
+  const plan = r.mode_plan;
+  $("#modeNotes").innerHTML = plan
+    ? `<strong>${esc(r.mode)}</strong> — ${(plan.notes || []).map(esc).join(" ")}`
+      + (plan.added_sources && plan.added_sources.length
+          ? `<br>added sources: ${plan.added_sources.map(esc).join(", ")}` : "")
+    : "";
   renderOutcomes(r.outcomes);
   $("#results").innerHTML = r.results.length
     ? r.results.map(renderCard).join("")
@@ -645,7 +691,7 @@ $("#form").addEventListener("submit", search);
 $("#savePrefs").addEventListener("click", async () => {
   await fetch("/api/prefs", {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ prefs: { selected: [...selected], sliders, dials } }),
+    body: JSON.stringify({ prefs: { selected: [...selected], sliders, dials, mode } }),
   });
   $("#savePrefs").textContent = "Saved ✓";
   setTimeout(() => ($("#savePrefs").textContent = "Save settings"), 1500);
@@ -653,8 +699,8 @@ $("#savePrefs").addEventListener("click", async () => {
 $("#resetPrefs").addEventListener("click", () => {
   selected = new Set(NAV.defaults);
   Object.assign(sliders, { rs: 0.5, fd: 0.5, rt: 0.5 });
-  dials = {};
-  renderNav(); renderSliders(); renderDials();
+  dials = {}; mode = "standard";
+  renderNav(); renderModes(); renderSliders(); renderDials();
 });
 
 init();

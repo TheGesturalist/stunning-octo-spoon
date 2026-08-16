@@ -76,6 +76,13 @@
 .rc .dial { font-size:11.5px; margin-bottom:5px; }
 .rc .dial span { display:flex; justify-content:space-between; gap:6px; }
 .rc .dial em { color:var(--dim); font-style:normal; font-variant-numeric:tabular-nums; }
+.rc .mode-btn { display:block; width:100%; text-align:left; margin-bottom:4px; padding:5px 8px;
+        font-size:11.5px; background:var(--card); color:var(--fg); border:1px solid var(--border); }
+.rc .mode-btn:hover { border-color:var(--accent); }
+.rc .mode-btn.active { background:var(--accent); color:#fff; border-color:var(--accent); }
+.rc .mode-btn small { display:block; font-size:10px; opacity:.75; margin-top:1px; }
+.rc .mode-notes { font-size:11.5px; color:var(--muted); margin-bottom:9px;
+        border-left:2px solid var(--accent); padding-left:8px; }
 .rc .status { color:var(--muted); font-size:12.5px; margin-bottom:8px; }
 .rc .outcomes { display:flex; flex-wrap:wrap; gap:4px; margin-bottom:12px; }
 .rc .pill { font-size:10.5px; padding:2px 7px; border-radius:10px; border:1px solid var(--border);
@@ -116,7 +123,9 @@
     <nav>
       <div id="rcNav"></div>
       <div class="weights">
-        <h2 style="font-size:10px;text-transform:uppercase;letter-spacing:.07em;color:var(--dim);margin:0 0 8px;font-weight:600;">Ranking weights</h2>
+        <h2 style="font-size:10px;text-transform:uppercase;letter-spacing:.07em;color:var(--dim);margin:0 0 8px;font-weight:600;">Search mode</h2>
+        <div id="rcModes"></div>
+        <h2 style="font-size:10px;text-transform:uppercase;letter-spacing:.07em;color:var(--dim);margin:12px 0 8px;font-weight:600;">Ranking weights</h2>
         <div id="rcSliders"></div>
         <h2 style="font-size:10px;text-transform:uppercase;letter-spacing:.07em;color:var(--dim);margin:10px 0 6px;font-weight:600;">Source trust</h2>
         <div id="rcDials"></div>
@@ -125,6 +134,7 @@
     </nav>
     <main>
       <div class="status" id="rcStatus"></div>
+      <div class="mode-notes" id="rcModeNotes"></div>
       <div class="outcomes" id="rcOutcomes"></div>
       <div id="rcResults"><div class="empty">Pick sources at left, type a query, hit Search.</div></div>
     </main>
@@ -178,6 +188,28 @@ const SOURCES = [
   { id:"library:all", bang:"lib", label:"My library", group:"Your library", kind:"library",
     hint:"loading…" }
 ];
+
+// Ports of search_modes.py. Keep these in step with the Python side or the two
+// consoles will disagree about what each mode means.
+const MODES = [
+  { mode:"standard", label:"Standard", description:"Straight relevance ranking." },
+  { mode:"seed_and_mutate", label:"Seed-and-mutate",
+    description:"Branch from the first pass's own vocabulary.",
+    sliders:{rs:.75}, add:["arena:channels"], mutate:true },
+  { mode:"contrarian", label:"Contrarian",
+    description:"Opposing aesthetics and dissenting arguments.",
+    sliders:{fd:1}, add:["academic:openalex","academic:crossref"],
+    extra:"critique criticism debate controversy objection" },
+  { mode:"time_tunnel", label:"Time tunnel",
+    description:"The same concept across decades.",
+    sliders:{rt:0}, add:["academic:crossref","wikimedia:wp"], rerank:"decade" },
+  { mode:"materiality", label:"Materiality",
+    description:"Scans, marginalia, ephemera, archival traces.",
+    add:["wikimedia:wpi","arena:channels"], trust:{"wikimedia:wpi":.6,"arena:channels":.6},
+    rerank:"material" }
+];
+const MATERIAL_HINTS = ["file:","image","collection","scan"];
+let mode = "standard";
 
 const DEFAULTS = ["wikimedia:wp","academic:openalex","arena:channels","library:all"];
 const BANGS = {}; SOURCES.forEach(s => { if (s.bang) BANGS[s.bang] = s.id; });
@@ -348,6 +380,51 @@ async function runSource(src, q, limit) {
   return [];
 }
 
+function decadeSpread(rows, limit) {
+  const buckets = {}, undated = [];
+  for (const r of rows) {
+    const d = String(r.it.date || "");
+    const yr = d.slice(0,4);
+    if (yr.length === 4 && /^\d{4}$/.test(yr)) {
+      const k = (Math.floor(+yr/10)*10) + "s";
+      (buckets[k] = buckets[k] || []).push(r);
+    } else undated.push(r);
+  }
+  const keys = Object.keys(buckets).sort(); const out = [];
+  while (keys.length && out.length < limit) {
+    for (let i = 0; i < keys.length && out.length < limit; i++) {
+      const b = buckets[keys[i]];
+      if (!b.length) { keys.splice(i,1); i--; continue; }
+      out.push(b.shift());
+    }
+  }
+  return out.concat(undated.slice(0, Math.max(0, limit - out.length)));
+}
+function materialFirst(rows, limit) {
+  const mat = [], rest = [];
+  for (const r of rows) {
+    const t = (r.it.title || "").toLowerCase();
+    (MATERIAL_HINTS.some(h => t.includes(h)) || r.src.id === "wikimedia:wpi" ? mat : rest).push(r);
+  }
+  return mat.concat(rest).slice(0, limit);
+}
+const MODE_STOP = new Set(("a an and are as at be but by for from has have how in into is it its of on or that the "
+ + "their there these this to was were what when where which who will with would about after also been both could each first from more most only other over should some such than then they them very well your").split(" "));
+function mineTerms(rows, exclude, count) {
+  const excl = new Set(exclude.map(s=>s.toLowerCase()));
+  const df = {};
+  for (const r of rows) {
+    const seen = new Set();
+    for (let tok of String((r.it.title||"") + " " + (r.it.summary||"")).toLowerCase().split(/[^a-z0-9']+/)) {
+      if (tok.length < 4 || excl.has(tok) || MODE_STOP.has(tok) || seen.has(tok)) continue;
+      seen.add(tok);
+    }
+    for (const tok of seen) df[tok] = (df[tok]||0)+1;
+  }
+  return Object.entries(df).filter(([,n])=>n>=2).sort((a,b)=>b[1]-a[1]||a[0].localeCompare(b[0]))
+    .slice(0, count||4).map(([t])=>t);
+}
+
 /* ---------- orchestration ---------- */
 function parseBangs(q) {
   const ids = []; let plain = q;
@@ -365,7 +442,13 @@ async function search(ev) {
   if (!raw) return;
   const [plain, bangIds] = parseBangs(raw);
   const q = plain || raw;
-  const chosen = (bangIds.length ? bangIds : [...selected]).map(id => BY_ID[id]).filter(Boolean);
+  const plan = MODES.find(m => m.mode === mode) || MODES[0];
+  const effSliders = Object.assign({}, sliders, plan.sliders || {});
+  const effDials = Object.assign({}, dials);
+  for (const k in (plan.trust || {})) effDials[k] = Math.max(-1, Math.min(1, (effDials[k]||0) + plan.trust[k]));
+  const chosenIds = bangIds.length ? bangIds
+    : [...new Set([...selected, ...((plan.add || []).filter(id => BY_ID[id]))])];
+  const chosen = chosenIds.map(id => BY_ID[id]).filter(Boolean);
   const status = document.getElementById("rcStatus");
   if (!chosen.length) { status.textContent = "No sources selected."; return; }
 
@@ -374,19 +457,40 @@ async function search(ev) {
   document.getElementById("rcOutcomes").innerHTML = "";
   const t0 = performance.now();
 
-  const settled = await Promise.all(chosen.map(async (src) => {
+  const sweep = async (query) => Promise.all(chosen.map(async (src) => {
     const s0 = performance.now();
-    try { return { src, items: await runSource(src, q, 15), ms: Math.round(performance.now()-s0) }; }
+    try { return { src, items: await runSource(src, query, 15), ms: Math.round(performance.now()-s0) }; }
     catch (e) { return { src, items: [], ms: Math.round(performance.now()-s0), error: e.message }; }
   }));
+
+  let settled = await sweep(q);
+  const modeNotes = [];
+  if (plan.extra) { settled = settled.concat(await sweep(q + " " + plan.extra));
+                    modeNotes.push("extra pass: critique/debate terms"); }
+  if (plan.mutate) {
+    const seedRows = settled.flatMap(o => o.items.map(it => ({ it, src: o.src })));
+    const mutated = mineTerms(seedRows, tokenize(q), 4);
+    if (mutated.length) {
+      settled = settled.concat(await sweep(mutated.join(" ")));
+      modeNotes.push("mutated on: " + mutated.join(", "));
+    }
+  }
+  // Collapse repeated sources so the outcome strip shows each one once.
+  const byId = {};
+  for (const o of settled) {
+    const p = byId[o.src.id];
+    byId[o.src.id] = p ? { src:o.src, items:p.items.concat(o.items), ms:p.ms+o.ms,
+                           error:p.error||o.error } : o;
+  }
+  settled = Object.values(byId);
 
   document.getElementById("rcOutcomes").innerHTML = settled.map(o =>
     `<span class="pill ${o.error ? "err" : "ok"}">${escHtml(o.src.label)}: ${o.error ? escHtml(o.error) : o.items.length + " · " + o.ms + "ms"}</span>`
   ).join("");
 
   const terms = tokenize(q), qv = termFreq(terms);
-  const strength = prefSignal(dials);
-  const weights = computeWeights(sliders, strength);
+  const strength = prefSignal(effDials);
+  const weights = computeWeights(effSliders, strength);
   const perSource = {};
   settled.forEach(o => perSource[o.src.id] = o.items.length);
 
@@ -400,7 +504,7 @@ async function search(ev) {
       novelty: it.library ? .3 : 1,
       recency: recencyScore(it.date),
       diversity: 1/Math.max(1, perSource[o.src.id]),
-      source_trust: Math.max(-1, Math.min(1, dials[o.src.id] || 0))
+      source_trust: Math.max(-1, Math.min(1, effDials[o.src.id] || 0))
     };
     let score = 0; for (const k in weights) score += weights[k]*comp[k];
     cands.push({ it, src: o.src, score, comp, text });
@@ -408,7 +512,7 @@ async function search(ev) {
   cands.sort((a,b)=>b.score-a.score);
 
   // MMR pass — same as federation._diversify.
-  const penalty = .25*sliders.fd, out = [], seen = {};
+  const penalty = .25*effSliders.fd, out = [], seen = {};
   while (cands.length && out.length < 25) {
     let bi = 0, bv = -Infinity;
     for (let i = 0; i < cands.length; i++) {
@@ -420,11 +524,18 @@ async function search(ev) {
     out.push(pick);
   }
 
+  let final = out;
+  if (plan.rerank === "decade") final = decadeSpread(out, 25);
+  else if (plan.rerank === "material") final = materialFirst(out, 25);
+  document.getElementById("rcModeNotes").innerHTML = plan.mode === "standard" ? ""
+    : `<strong>${escHtml(plan.label)}</strong> — ${escHtml(plan.description)}`
+      + (modeNotes.length ? "<br>" + escHtml(modeNotes.join(" · ")) : "");
+
   const ms = Math.round(performance.now()-t0);
-  status.textContent = `${out.length} result(s) in ${ms} ms for "${q}"`
+  status.textContent = `${final.length} result(s) in ${ms} ms for "${q}"`
     + (bangIds.length ? ` · bang override: ${bangIds.join(", ")}` : "");
-  document.getElementById("rcResults").innerHTML = out.length
-    ? out.map(renderCard).join("")
+  document.getElementById("rcResults").innerHTML = final.length
+    ? final.map(renderCard).join("")
     : `<div class="empty">No results. Try more sources, or a broader term.</div>`;
 }
 
@@ -469,6 +580,13 @@ function renderNav() {
       renderNav(); renderDials(); });
   });
 }
+function renderModes() {
+  document.getElementById("rcModes").innerHTML = MODES.map(m =>
+    `<button type="button" class="mode-btn ${m.mode===mode?"active":""}" data-mode="${escHtml(m.mode)}">
+       ${escHtml(m.label)}<small>${escHtml(m.description)}</small></button>`).join("");
+  document.querySelectorAll("#rcModes button").forEach(b =>
+    b.addEventListener("click", () => { mode = b.dataset.mode; renderModes(); }));
+}
 function renderSliders() {
   const rows = [["rs","Relevant","Surprising"],["fd","Focused","Diverse"],["rt","Timeless","Recent"]];
   document.getElementById("rcSliders").innerHTML = rows.map(([k,a,b])=>
@@ -492,7 +610,7 @@ function renderDials() {
 }
 
 async function init() {
-  renderNav(); renderSliders(); renderDials();
+  renderNav(); renderModes(); renderSliders(); renderDials();
   document.getElementById("rcNote").innerHTML =
     "arXiv and the Public Domain Review are absent here: neither allows cross-origin browser requests. "
     + "They are available in the full local app.";

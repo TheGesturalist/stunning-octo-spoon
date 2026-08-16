@@ -17,7 +17,7 @@ from __future__ import annotations
 import math
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -38,14 +38,18 @@ from providers.base import SearchProvider
 from query_planner import (
     RankCandidate,
     RankingSliders,
+    SearchMode,
     UserPreferenceVector,
     compute_rank_weights,
     rank_candidates,
 )
+from search_modes import RERANKERS, ModePlan, mine_terms, plan_search_mode
 
 DEFAULT_CACHE_MAX_AGE = 900.0  # 15 minutes
 DEFAULT_TIMEOUT = 20.0
 DEFAULT_MAX_WORKERS = 6
+# Ceiling on additional query passes a mode may request.
+MAX_EXTRA_PASSES = 1
 
 # Half-life for the recency component. Research material ages slowly, so a
 # five-year-old paper should not be buried by a blog post from last week.
@@ -122,6 +126,8 @@ class FederatedResponse:
     outcomes: Sequence[SourceOutcome] = field(default_factory=tuple)
     weights: Mapping[str, float] = field(default_factory=dict)
     bangs: Sequence[str] = field(default_factory=tuple)
+    mode: str = SearchMode.STANDARD.value
+    mode_plan: Mapping[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -131,6 +137,8 @@ class FederatedResponse:
             "outcomes": [o.to_dict() for o in self.outcomes],
             "weights": {k: round(v, 4) for k, v in self.weights.items()},
             "bangs": list(self.bangs),
+            "mode": self.mode,
+            "mode_plan": dict(self.mode_plan) if self.mode_plan else None,
         }
 
 
@@ -253,8 +261,16 @@ def federated_search(
     timeout: float = DEFAULT_TIMEOUT,
     max_workers: int = DEFAULT_MAX_WORKERS,
     library_urls: Iterable[str] | None = None,
+    mode: SearchMode = SearchMode.STANDARD,
+    all_providers: Sequence[SearchProvider] | None = None,
 ) -> FederatedResponse:
-    """Query every selected provider concurrently and rank the union."""
+    """Query every selected provider concurrently and rank the union.
+
+    `mode` applies one of the exploratory presets (see `search_modes.py`), which
+    may widen the source set, move the sliders, add a query pass, and re-rank.
+    `all_providers` is the pool a mode may pull extra sources from; without it a
+    mode can only work with what the caller already selected.
+    """
 
     sliders = sliders or RankingSliders()
     plain_query = " ".join(query.split())
@@ -264,7 +280,29 @@ def federated_search(
             query=query,
             plain_query=plain_query,
             weights=compute_rank_weights(sliders, _preference_vector(source_weights)),
+            mode=mode.value,
         )
+
+    pool = list(all_providers or providers)
+    plan = plan_search_mode(
+        mode,
+        query=plain_query,
+        sliders=sliders,
+        selected_ids=[p.provider_id for p in providers],
+        available_ids=[p.provider_id for p in pool],
+    )
+    if plan.mode is not SearchMode.STANDARD:
+        sliders = plan.sliders
+        if plan.add_provider_ids:
+            by_id = {p.provider_id: p for p in pool}
+            providers = list(providers) + [
+                by_id[pid] for pid in plan.add_provider_ids if pid in by_id
+            ]
+        if plan.source_weights:
+            merged = dict(source_weights or {})
+            for pid, weight in plan.source_weights.items():
+                merged[pid] = max(-1.0, min(1.0, merged.get(pid, 0.0) + weight))
+            source_weights = merged
 
     per_source = per_source_limit or max(5, min(limit, 25))
     known_urls = {u for u in (library_urls or ()) if u}
@@ -279,38 +317,66 @@ def federated_search(
     outcomes: list[SourceOutcome] = []
     collected: list[tuple[SearchProvider, NormalizedItem]] = []
 
-    with ThreadPoolExecutor(max_workers=max(1, max_workers)) as pool:
-        futures = {
-            pool.submit(
-                _run_provider, provider, plain_query, per_source, db_path, cache_max_age
-            ): provider
-            for provider in providers
-        }
-        for future in as_completed(futures, timeout=None):
-            provider = futures[future]
-            try:
-                items, cached, elapsed_ms = future.result(timeout=timeout)
-            except Exception as exc:  # noqa: BLE001 — one source never sinks the search
+    def fan_out(pass_query: str) -> list[tuple[SearchProvider, NormalizedItem]]:
+        """One concurrent sweep of every provider for a single query string."""
+
+        found: list[tuple[SearchProvider, NormalizedItem]] = []
+        with ThreadPoolExecutor(max_workers=max(1, max_workers)) as executor:
+            futures = {
+                executor.submit(
+                    _run_provider, provider, pass_query, per_source, db_path, cache_max_age
+                ): provider
+                for provider in providers
+            }
+            for future in as_completed(futures, timeout=None):
+                provider = futures[future]
+                try:
+                    items, cached, elapsed_ms = future.result(timeout=timeout)
+                except Exception as exc:  # noqa: BLE001 — one source never sinks the search
+                    outcomes.append(
+                        SourceOutcome(
+                            provider_id=provider.provider_id,
+                            label=provider.label,
+                            ok=False,
+                            error=f"{type(exc).__name__}: {exc}",
+                        )
+                    )
+                    continue
                 outcomes.append(
                     SourceOutcome(
                         provider_id=provider.provider_id,
                         label=provider.label,
-                        ok=False,
-                        error=f"{type(exc).__name__}: {exc}",
+                        ok=True,
+                        count=len(items),
+                        cached=cached,
+                        elapsed_ms=elapsed_ms,
                     )
                 )
-                continue
-            outcomes.append(
-                SourceOutcome(
-                    provider_id=provider.provider_id,
-                    label=provider.label,
-                    ok=True,
-                    count=len(items),
-                    cached=cached,
-                    elapsed_ms=elapsed_ms,
-                )
-            )
-            collected.extend((provider, item) for item in items)
+                found.extend((provider, item) for item in items)
+        return found
+
+    collected.extend(fan_out(plain_query))
+
+    # A mode may widen the search with further passes. Each costs another round
+    # of requests, so they are capped — and cache-backed on repeat.
+    for extra in plan.extra_queries[:MAX_EXTRA_PASSES]:
+        collected.extend(fan_out(extra))
+
+    if plan.mutate:
+        # Seed-and-mutate: let the first pass decide where to branch next.
+        seed_hits = _rank(
+            collected,
+            terms=terms,
+            sliders=sliders,
+            source_weights=source_weights,
+            known_urls=known_urls,
+            limit=10,
+        )
+        mutated = mine_terms(seed_hits, exclude=terms)
+        if mutated:
+            plan = replace(plan, notes=plan.notes + (f"Mutated on: {', '.join(mutated)}",))
+            collected.extend(fan_out(" ".join(mutated)))
+            terms = list(terms) + mutated
 
     hits = _rank(
         collected,
@@ -318,16 +384,49 @@ def federated_search(
         sliders=sliders,
         source_weights=source_weights,
         known_urls=known_urls,
-        limit=limit,
+        # Over-fetch when a re-ranker will reorder, so it has material to work with.
+        limit=limit * 3 if plan.rerank else limit,
     )
-    outcomes.sort(key=lambda o: (not o.ok, -o.count, o.label))
+    if plan.rerank:
+        reranker = RERANKERS.get(plan.rerank)
+        if reranker:
+            hits = reranker(hits, limit)
+    hits = list(hits)[:limit]
+
     return FederatedResponse(
         query=query,
         plain_query=plain_query,
         hits=tuple(hits),
-        outcomes=tuple(outcomes),
+        outcomes=tuple(_merge_outcomes(outcomes)),
         weights=compute_rank_weights(sliders, _preference_vector(source_weights)),
+        mode=plan.mode.value,
+        mode_plan=plan.to_dict() if plan.mode is not SearchMode.STANDARD else None,
     )
+
+
+def _merge_outcomes(outcomes: Sequence[SourceOutcome]) -> list[SourceOutcome]:
+    """Collapse per-pass outcomes to one row per source.
+
+    A mode can run a source more than once; the UI strip should still show it
+    once, with the totals.
+    """
+
+    merged: dict[str, SourceOutcome] = {}
+    for outcome in outcomes:
+        prior = merged.get(outcome.provider_id)
+        if prior is None:
+            merged[outcome.provider_id] = outcome
+            continue
+        merged[outcome.provider_id] = SourceOutcome(
+            provider_id=outcome.provider_id,
+            label=outcome.label,
+            ok=prior.ok or outcome.ok,
+            count=prior.count + outcome.count,
+            cached=prior.cached and outcome.cached,
+            error=prior.error or outcome.error,
+            elapsed_ms=prior.elapsed_ms + outcome.elapsed_ms,
+        )
+    return sorted(merged.values(), key=lambda o: (not o.ok, -o.count, o.label))
 
 
 def _run_provider(

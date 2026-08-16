@@ -534,6 +534,7 @@ def cmd_websearch(args: argparse.Namespace) -> None:
 
     from federation import federated_search, parse_bangs
     from providers import bang_map, default_selection
+    from query_planner import SearchMode
 
     indexes = _load_documents_from_db(args.db) if Path(args.db).exists() else {}
     providers = _build_providers(indexes)
@@ -562,7 +563,17 @@ def cmd_websearch(args: argparse.Namespace) -> None:
         limit=args.limit,
         db_path=args.db,
         library_urls={doc.source for docs in indexes.values() for doc in docs if doc.source},
+        mode=SearchMode(args.mode),
+        all_providers=providers,
     )
+
+    if response.mode_plan:
+        plan = response.mode_plan
+        print(f"  [mode] {response.mode}", file=sys.stderr)
+        for note in plan.get("notes", []):
+            print(f"         {note}", file=sys.stderr)
+        if plan.get("added_sources"):
+            print(f"         added sources: {', '.join(plan['added_sources'])}", file=sys.stderr)
 
     for outcome in response.outcomes:
         state = "ok " if outcome.ok else "ERR"
@@ -687,6 +698,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_web.add_argument(
         "--recent-timeless", dest="recent_timeless", type=float, default=0.5,
         metavar="0..1", help="0 = timeless, 1 = recent (default 0.5)",
+    )
+    p_web.add_argument(
+        "--mode", default="standard",
+        choices=["standard", "seed_and_mutate", "contrarian", "time_tunnel", "materiality"],
+        help="Exploratory search mode (default: standard)",
     )
     p_web.add_argument(
         "--explain", action="store_true", help="Show per-component scores and weights"
