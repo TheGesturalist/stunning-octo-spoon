@@ -162,3 +162,28 @@ CREATE TABLE IF NOT EXISTS provenance_events (
 CREATE INDEX IF NOT EXISTS idx_provenance_item
     ON provenance_events(connector, source_id, event_at);
 """.strip()
+
+
+# Live web-search results are cached HERE, deliberately *not* in
+# normalized_items. The curated corpus stays exactly as large as the owner made
+# it; a stray `SELECT * FROM normalized_items` can never see transient web hits.
+# Promotion into the library is an explicit act (storage.save_web_item_to_library).
+WEB_CACHE_SQLITE_DDL = """
+CREATE TABLE IF NOT EXISTS web_cache_items (
+    provider_id TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    query_key TEXT NOT NULL,
+    cached_at TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    PRIMARY KEY (provider_id, source_id, query_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_web_cache_query
+    ON web_cache_items(query_key, provider_id, cached_at);
+
+CREATE TABLE IF NOT EXISTS search_preferences (
+    pref_key TEXT PRIMARY KEY,
+    pref_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+""".strip()
