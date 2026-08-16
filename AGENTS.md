@@ -72,7 +72,10 @@ source APIs ──▶ connectors/<name>.py ──▶ NormalizedItem ──▶ co
 - **Connectors** (`connectors/`): `raindrop_io`, `reader_io` (Readwise Reader),
   `tumblr`, `internet_archive`, `local_library`, `academic_private`, **`arena`**,
   `fixture`. Each subclasses `BaseConnector` (`connectors/base.py`) and emits
-  `NormalizedItem` (`connectors/schema.py`).
+  `NormalizedItem` (`connectors/schema.py`). **These are the only connectors that
+  exist.** The broader vision (Wikimedia/cross-wiki search, Public Domain Review,
+  Open Culture, Cosmos, Pinterest, academic databases) is designed but not built
+  — see **§9 Roadmap** and `HANDOFF.md`.
 - **Storage/enrichment**: `connectors/storage.py` (`upsert_item`,
   `upsert_item_with_enrichment`), `connectors/enrichment.py`. Schema/DDL live in
   `connectors/schema.py`.
@@ -173,3 +176,58 @@ No environment setup needed (stdlib only). `SPOON_DB_PATH` overrides the default
 | Foreground ingest times out (~2 min) | The CLI fetches all channels before writing, so a timeout writes nothing. Re-run in the background. |
 | Tests can't import `connectors`/`config` | Run from the repo root, or set `PYTHONPATH=<repo>`. Pyright "missing import" warnings on `run.py` are false positives (project root not on its path). |
 | Search finds nothing expected | Check for a stale `--indexes`/`?connector=` filter; try a more common word (semantic neighbors still help). |
+
+---
+
+## 9. Roadmap — built vs. planned
+
+**Important context for anyone extending this project.** The project began as a
+**wiki search tool** and was always meant to grow into a constrained web-search
+front end (the owner's **"Research Console"**), tying in live public sources.
+Most of that is **designed but not yet implemented.** `query_planner.py` routes
+queries to connector-group *names* that, in several cases, **have no connector
+module behind them yet** — routing to a name is not the same as a working source.
+
+### Built (connector modules that exist)
+`raindrop_io` · `reader_io` · `tumblr` · `internet_archive` · `local_library` ·
+`academic_private` · `arena` · `fixture`.
+
+### Planned / NOT built
+| Planned source | Group (in `query_planner`) | Status |
+|---|---|---|
+| **Wikimedia / cross-wiki** (namespace-aware) | — | **Not built. This is the flagship next feature** (`HANDOFF.md` §"What's next" #1). |
+| Public Domain Review (`public_domain_review`) | Canonical/cultural | Not built (name only). |
+| Open Culture (`open_culture`) | Canonical/cultural | Not built (name only). |
+| Cosmos (`cosmos`) | Visual | Not built (name only). |
+| Pinterest (`pinterest`) | Visual | Not built (name only). |
+| Library indexes / academic databases | Academic | Only `academic_private` exists; the broader group is not built. |
+
+### The Wikimedia connector — the origin of the project
+`HANDOFF.md` §1 has the full spec: one `WikimediaConnector(site, namespace,
+query)` over the MediaWiki Action API (`/w/api.php`, no auth for reads), driven by
+a **preset map keyed by the owner's "bang" vocabulary** that mirrors the Research
+Console:
+
+- **Sites:** `wp` English Wikipedia (mainspace) · `meta` Meta-Wiki · `mw`
+  MediaWiki.org · `wix` WikiIndex
+- **en.wp namespaces:** `wpp` Project · `wpmw` MediaWiki · `wpc` Category ·
+  `wph` Help · `wpi` Image/File · `wpu` User · `wpt` Template
+- **Community/process pages:** `wphd` Help Desk · `wpfaq` FAQ · `wps` The Signpost
+  · `wptm` Template Messages · `vpg`/`vpp`/`vpt`/`vpo` Village Pump
+  (General/Policy/Technical/Other)
+- **Operator:** `wpl` list articles (`intitle:"List of"`)
+
+### Where the full vision is written down
+- **`HANDOFF.md`** — the primary design doc: Wikimedia connector spec + bang
+  table + open questions (started as the "wiki search tool").
+- **`README.md`** (Query Planner) — the connector *groups* (academic / visual /
+  canonical-cultural / personal memory) and ranking/mode presets.
+- **`PROJECT_STATUS.md`** — longer status narrative.
+- **`~/2026_gemini_local/research_console_architecture.pdf`** — the original
+  Research Console / bang UI that seeded the whole thing.
+
+### Suggested starting point for a fresh session
+Build the `WikimediaConnector` per `HANDOFF.md` §1 (mirror `connectors/arena.py`
+for structure and `tests/test_arena_connector.py` for the mock-API test pattern),
+register its bang presets in `run.py`'s ingest CLI, then layer PDR / Open Culture
+on top. None of the planned sources need auth for reads.
