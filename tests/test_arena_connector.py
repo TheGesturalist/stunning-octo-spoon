@@ -46,14 +46,20 @@ class ArenaLimitTest(unittest.TestCase):
 
 
 class ArenaMultiChannelTest(unittest.TestCase):
-    def test_accumulates_across_channels_and_tags_source(self) -> None:
+    def test_dedupes_shared_blocks_across_channels(self) -> None:
+        # Channel a has blocks 0,1,2; channel b has blocks 0,1,2,3.
+        # Blocks 0,1,2 are shared and must collapse to one item each.
         connector = ArenaConnector(channel="a,b")
         side = [{"contents": _blocks(3)}, {"contents": _blocks(4)}]
         with patch("connectors.arena.get_json", side_effect=side):
             items = connector.fetch_items(limit=20)
-        self.assertEqual(len(items), 7)
-        channels = {b["_arena_channel"] for b in items}
-        self.assertEqual(channels, {"a", "b"})
+        # 4 unique blocks, not 7.
+        self.assertEqual(len(items), 4)
+        self.assertEqual({b["id"] for b in items}, {0, 1, 2, 3})
+        # A shared block records BOTH channels; the b-only block records just b.
+        norm = {b["id"]: connector.normalize_item(b) for b in items}
+        self.assertEqual(norm[0].tags, ["a", "b"])
+        self.assertEqual(norm[3].tags, ["b"])
 
 
 class ArenaUserEnumerationTest(unittest.TestCase):

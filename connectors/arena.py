@@ -102,11 +102,11 @@ class ArenaConnector(BaseConnector):
             page += 1
         return slugs
 
-    def _fetch_channel_contents(self, slug: str, remaining: int) -> list[dict[str, Any]]:
-        """Page through one channel's blocks, tagging each with its channel slug."""
+    def _fetch_channel_contents(self, slug: str, cap: int) -> list[dict[str, Any]]:
+        """Page through one channel's blocks, up to `cap` blocks."""
         out: list[dict[str, Any]] = []
         page = 1
-        while remaining > 0:
+        while len(out) < cap:
             url = (
                 f"{self.BASE}/channels/{quote(slug)}/contents"
                 f"?page={page}&per={self.PAGE_SIZE}"
@@ -119,23 +119,32 @@ class ArenaConnector(BaseConnector):
             contents = payload.get("contents") or []
             if not contents:
                 break
-            for block in contents:
-                block["_arena_channel"] = slug
-                out.append(block)
-                if len(out) >= remaining:
-                    return out[:remaining]
+            out.extend(contents)
             if len(contents) < self.PAGE_SIZE:
                 break
             page += 1
-        return out[:remaining]
+        return out[:cap]
 
     def fetch_items(self, cursor: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
-        items: list[dict[str, Any]] = []
+        # Dedupe by block id across channels: the same Are.na block can be
+        # connected to several channels. Keep one copy, but remember every
+        # channel it appears in (preserved as tags at normalize time).
+        by_id: "dict[str, dict[str, Any]]" = {}
         for slug in self._resolve_channel_slugs():
-            if len(items) >= limit:
+            if len(by_id) >= limit:
                 break
-            items.extend(self._fetch_channel_contents(slug, limit - len(items)))
-        return items[:limit]
+            for block in self._fetch_channel_contents(slug, limit):
+                bid = str(block.get("id"))
+                existing = by_id.get(bid)
+                if existing is None:
+                    if len(by_id) >= limit:
+                        break
+                    block["_arena_channels"] = [slug]
+                    block["_arena_channel"] = slug  # primary (first-seen) channel
+                    by_id[bid] = block
+                elif slug not in existing["_arena_channels"]:
+                    existing["_arena_channels"].append(slug)
+        return list(by_id.values())
 
     # -- normalization ------------------------------------------------------
 
@@ -166,7 +175,13 @@ class ArenaConnector(BaseConnector):
         klass = item.get("class")
         user = item.get("user") or {}
         image = item.get("image")
-        channel_slug = item.get("_arena_channel")
+        # Every channel this block appears in (dedupe preserves them all).
+        channels = item.get("_arena_channels")
+        if not channels:
+            primary = item.get("_arena_channel")
+            channels = [primary] if primary else []
+        channels = list(dict.fromkeys(c for c in channels if c))  # unique, ordered
+        channel_slug = channels[0] if channels else None
         image_url = None
         if isinstance(image, dict):
             original = image.get("original")
@@ -183,9 +198,10 @@ class ArenaConnector(BaseConnector):
             content_type=self._CLASS_TO_TYPE.get(klass or "", "arena_block"),
             created_at=item.get("created_at"),
             updated_at=item.get("updated_at"),
-            tags=[t for t in [channel_slug] if t],
+            tags=channels,
             metadata={
                 "channel": channel_slug,
+                "channels": channels,
                 "block_class": klass,
                 "image_url": image_url,
             },
