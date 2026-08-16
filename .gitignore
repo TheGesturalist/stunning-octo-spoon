@@ -12,3 +12,7 @@ __pycache__/
 
 # macOS
 .DS_Store
+
+# generated static search index — regenerate with `run.py export-index`,
+# deploy deliberately; never commit a corpus dump to the repo
+library-index.json

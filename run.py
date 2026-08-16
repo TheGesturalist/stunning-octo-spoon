@@ -13,12 +13,13 @@ Usage:
 from __future__ import annotations
 import argparse
 import csv
+import gzip
 import http.server
 import json
 import re
 import sqlite3
 import sys
-import urllib.parse
+from datetime import datetime, timezone
 from pathlib import Path
 import config
 from connectors.storage import (
@@ -416,6 +417,78 @@ def cmd_export(args: argparse.Namespace) -> None:
             out.close()
     if not use_stdout:
         print(f"Exported {count} item(s) to {args.output}", file=sys.stderr)
+def cmd_export_index(args: argparse.Namespace) -> None:
+    """Write a compact static search index for a public site.
+
+    `--connectors` is deliberately required with no default. Publishing is a
+    one-way door — an index that ships by accident can be crawled before anyone
+    notices — so the operator names what goes out every single time, and this
+    command prints what it left behind.
+    """
+
+    requested = [c.strip() for c in args.connectors.split(",") if c.strip()]
+    if not requested:
+        print("Error: --connectors must name at least one connector.", file=sys.stderr)
+        sys.exit(1)
+
+    with sqlite3.connect(args.db) as conn:
+        available = [
+            row[0]
+            for row in conn.execute(
+                "SELECT DISTINCT connector FROM normalized_items ORDER BY connector"
+            )
+        ]
+        unknown = [c for c in requested if c not in available]
+        if unknown:
+            print(f"Error: no such connector(s): {', '.join(unknown)}", file=sys.stderr)
+            print(f"Available: {', '.join(available)}", file=sys.stderr)
+            sys.exit(1)
+
+        placeholders = ",".join("?" for _ in requested)
+        rows = conn.execute(
+            f"""SELECT connector, title, summary, source_url, created_at, tags_json
+                FROM normalized_items WHERE connector IN ({placeholders})
+                ORDER BY created_at DESC""",
+            requested,
+        ).fetchall()
+
+    items = []
+    for connector, title, summary, url, created_at, tags_json in rows:
+        if not (title or summary):
+            continue
+        entry: dict[str, object] = {"c": connector, "t": title or ""}
+        if url:
+            entry["u"] = url
+        if created_at:
+            entry["d"] = created_at[:10]
+        if not args.no_summaries and summary:
+            entry["s"] = summary[: args.summary_chars]
+        tags = json.loads(tags_json or "[]")
+        if tags:
+            entry["g"] = tags[:8]
+        items.append(entry)
+
+    payload = {
+        "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "connectors": requested,
+        "count": len(items),
+        "items": items,
+    }
+    blob = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    Path(args.output).write_text(blob, encoding="utf-8")
+
+    size_mb = len(blob.encode("utf-8")) / 1_048_576
+    gz_mb = len(gzip.compress(blob.encode("utf-8"))) / 1_048_576
+    excluded = [c for c in available if c not in requested]
+    print(f"Wrote {len(items):,} item(s) to {args.output}")
+    print(f"  size: {size_mb:.2f} MB raw · {gz_mb:.2f} MB gzipped (hosts gzip automatically)")
+    print(f"  included: {', '.join(requested)}")
+    print(f"  EXCLUDED: {', '.join(excluded) if excluded else '(nothing — every connector was published)'}")
+    if not args.no_summaries:
+        print(f"  summaries included, truncated to {args.summary_chars} chars")
+    print("\nThis file is meant to be served publicly. Read the two lines above before you deploy it.")
+
+
 # ---------------------------------------------------------------------------
 # Web UI + federated web search
 # ---------------------------------------------------------------------------
@@ -641,6 +714,24 @@ def build_parser() -> argparse.ArgumentParser:
     p_export.add_argument("--output", "-o", metavar="PATH", help="Output file (default: stdout)")
     p_export.add_argument("--connector", metavar="NAME", help="Restrict to a single connector")
     p_export.add_argument("--limit", type=int, metavar="N", help="Max items to export")
+    # -- export-index --
+    p_idx = sub.add_parser(
+        "export-index",
+        help="Write a compact static search index for a public site (explicit connectors required)",
+    )
+    p_idx.add_argument("--db", default=config.db_path(), metavar="PATH", help="Database path")
+    p_idx.add_argument(
+        "--connectors", required=True, metavar="a,b,...",
+        help="REQUIRED. Connectors to publish. Nothing is included by default.",
+    )
+    p_idx.add_argument(
+        "--output", "-o", default="library-index.json", metavar="PATH", help="Output file"
+    )
+    p_idx.add_argument("--no-summaries", action="store_true", help="Titles and URLs only")
+    p_idx.add_argument(
+        "--summary-chars", type=int, default=280, metavar="N", help="Truncate summaries (default 280)"
+    )
+
     # -- serve --
     p_serve = sub.add_parser("serve", help="Launch the local web UI")
     p_serve.add_argument("--db", default=config.db_path(), metavar="PATH", help="Database path")
@@ -660,6 +751,7 @@ def main() -> None:
         "health": cmd_health,
         "stats": cmd_stats,
         "export": cmd_export,
+        "export-index": cmd_export_index,
         "serve": cmd_serve,
     }
     dispatch[args.command](args)
