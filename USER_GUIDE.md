@@ -24,10 +24,17 @@ the server when you're done.
 
 > Use `python3`, not `python`, on this Mac.
 
+The layout is a single page: a header showing your totals per source, a search
+box with two dropdowns (source filter + how many results), and the results
+below. There is no sidebar or left-hand nav.
+
 What you can do in the web app:
 - **Search** across everything with one box.
-- **Filter by source** (Raindrop / Readwise / Are.na) — the sidebar shows how
-  many items each has.
+- **Filter by source** with the **dropdown** next to the search box — it lists
+  each source with its item count (`raindrop_io (3,859)`, `reader_io (1,996)`,
+  `arena (838)`); leave it on **all sources** to search everything. The header
+  line shows the same totals.
+- Choose **how many results** (10 / 20 / 50) with the second dropdown.
 - Each result shows a **title, source link, a highlighted snippet**, why it
   matched, and a few **"similar" items** so you can wander sideways.
 
