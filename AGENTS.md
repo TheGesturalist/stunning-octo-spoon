@@ -110,7 +110,7 @@ live query ──▶ providers/<name>.py ──▶ NormalizedItem ──┬─�
 cd /Users/themainframe/claude_git_home/stunning-octo-spoon
 python3 -m unittest discover -s tests      # full suite (130 tests) — do this after any change
 python3 run.py stats                       # sanity: should report 6,693 items
-python3 run.py serve --port 8090           # web UI at http://localhost:8090 (NOT 8080 — see §9)
+python3 run.py serve                       # web UI at http://localhost:8090 (default; NOT 8080 — see §9)
 python3 run.py search "query" --indexes arena --limit 20   # local corpus only
 python3 run.py sources                     # every searchable source + its bang
 python3 run.py websearch "query" --explain # library + live web, ranked together
@@ -287,7 +287,7 @@ deliberate act rather than by `git push`.
 
 Deployment note: the owner's cloudflared tunnel maps `library.bluebear.one` to
 `localhost:8080` (Calibre). **Never run `serve` on 8080** — anything on that
-port is published at that hostname. Use `--port 8090`.
+port is published at that hostname. The default is now 8090; don't change it back.
 
 ### Search modes (`search_modes.py`)
 

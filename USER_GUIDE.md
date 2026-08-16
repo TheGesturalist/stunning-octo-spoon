@@ -17,15 +17,16 @@ From a Terminal:
 
 ```bash
 cd /Users/themainframe/claude_git_home/stunning-octo-spoon
-python3 run.py serve --port 8090
+python3 run.py serve
 ```
 
 Then open **http://localhost:8090**. Leave the Terminal window open while you
 use it; press **Ctrl-C** there to stop the server.
 
-> Use port **8090**, not the default 8080 — Calibre uses 8080, and your
-> Cloudflare tunnel publishes whatever is on it at `library.bluebear.one`.
-> It also takes ~18 seconds to start; it prints `Serving …` when it's ready.
+> It listens on **8090** by default — 8080 belongs to Calibre, and your
+> Cloudflare tunnel publishes whatever is on that port at
+> `library.bluebear.one`. It takes ~18 seconds to start; it prints
+> `Serving …` when it's actually ready.
 
 > Use `python3`, not `python`, on this Mac.
 

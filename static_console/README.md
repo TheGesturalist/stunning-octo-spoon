@@ -120,11 +120,10 @@ allowing only your own email.
 
 Run spoon on **8090**, not 8080. Your tunnel maps `library.bluebear.one` to
 `localhost:8080`; anything else that binds that port gets published at that
-hostname instead of Calibre. Spoon's default is 8080, so pass the port
-explicitly:
+hostname instead of Calibre. `serve` now defaults to 8090 for exactly this reason:
 
 ```bash
-python3 run.py serve --port 8090
+python3 run.py serve
 ```
 
 The app binds `127.0.0.1` by default, so nothing is reachable until the tunnel
