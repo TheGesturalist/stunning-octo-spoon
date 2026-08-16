@@ -25,6 +25,7 @@ tunnelled app is the real thing.
 | Your library | titles + summaries, from a published index | full text |
 | Save to library | ❌ read-only | ✅ |
 | Ranking (sliders, dials, MMR) | ✅ faithful port | ✅ |
+| Search modes (all four) | ✅ faithful port | ✅ |
 
 arXiv and the Public Domain Review send no `Access-Control-Allow-Origin`
 header, so a browser is not permitted to call them. Including them would need a
@@ -144,5 +145,7 @@ The static page hard-codes its source list and ranking, mirroring
 static page will not learn about it automatically — add it to the `SOURCES`
 array and give it a `runSource` branch. The scoring functions
 (`lexicalScore`, `lengthConfidence`, `computeWeights`, the MMR pass) are
-line-for-line ports; if you change the ranking in Python, change it here too or
-the two consoles will disagree about what "best" means.
+line-for-line ports, as are the four search modes (`MODES`, `decadeSpread`,
+`materialFirst`, `mineTerms`, and the shared stopword list). If you change
+ranking or a mode in Python, change it here too or the two consoles will
+disagree about what "best" means.

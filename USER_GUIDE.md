@@ -54,6 +54,20 @@ Below them, **Source trust** gives every selected source its own dial from −1 
 +1: push OpenAlex up and Open Culture down and the ranking follows. Expand
 **Computed component weights** to see exactly what the sliders produced.
 
+**Search mode — change what the search is *for*.** Five buttons above the
+sliders:
+
+| Mode | Use it when |
+|---|---|
+| Standard | You want the best matches, ranked plainly. |
+| Seed-and-mutate | You don't quite know the right words yet. It searches, learns the vocabulary from what came back, and searches again on that. |
+| Contrarian | You want the argument, not the consensus — it forces spread across sources and runs a second pass for critique and debate. |
+| Time tunnel | You want to watch an idea move through time. Recency stops counting and results are spread one-per-decade. |
+| Materiality | You want the objects — scans, images, ephemera — rather than writing about them. |
+
+The line under the search box tells you what the mode did, including which
+sources it pulled in and (for seed-and-mutate) which terms it branched on.
+
 **Results.** Each card shows the title (linking out), which source it came from,
 a highlighted snippet, and its score breakdown. Items already in your library are
 badged as such. Anything from the web has a **Save to library** button — that is
@@ -117,6 +131,8 @@ python3 run.py websearch "maps" --focused-diverse 1.0   # spread across sources
 python3 run.py websearch "maps" --recent-timeless 0.0   # ignore how new things are
 python3 run.py websearch "maps" --relevant-surprising 0.8
 python3 run.py websearch "maps" --explain               # show the score breakdown
+python3 run.py websearch "maps" --mode time_tunnel      # spread across decades
+python3 run.py websearch "maps" --mode materiality      # scans and images first
 ```
 
 Quote a query containing a `!` with single quotes, or your shell will complain.

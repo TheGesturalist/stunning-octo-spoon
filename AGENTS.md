@@ -41,19 +41,14 @@ installs. Tests are `unittest`.
 
 ## 3. Current state (2026-08-16)
 
-- **PR #13 is merged.** `origin/main` is at `5480d06` and carries the Are.na
-  connector and the `query_planner.py` byte-corruption fix. The old warning
-  about `main` carrying that corruption no longer applies.
-  - Note: the merge landed at `22da3dc`, so the last two commits on
-    `feat/arena-connector` (`2994233`, `d41870d` — the §9 roadmap) were **not**
-    in the merge. They are carried on the branch below.
-- Active branch: **`claude/auto-agent-web-search-98c012`** — the live web search
-  work (`providers/`, `federation.py`, `web_ui.py`). Branched from `origin/main`
-  with those two orphaned doc commits cherry-picked on top.
-  **102 tests pass.** Not pushed — pushing/merging is the owner's call (§7).
+- **PRs #13, #14 and #15 are all merged.** `origin/main` carries the Are.na
+  connector, the `query_planner.py` byte-corruption fix, the live web search
+  work (`providers/`, `federation.py`, `web_ui.py`), and the static console.
+  The old warning about `main` carrying that corruption no longer applies.
+- Active branch: **`claude/auto-agent-web-search-98c012`** — search modes
+  (`search_modes.py`) on top of merged `main`. **130 tests pass.**
 - The full Are.na re-ingest for user `johnny-dicanero` is **done**: 79
-  non-private channels → 838 unique blocks. Old per-channel `arena:<slug>` rows
-  were purged first.
+  non-private channels → 838 unique blocks.
 - Keep files UTF-8 clean — the historical `query_planner.py` corruption came
   from a shell-transcript round-trip. Don't reintroduce it.
 
@@ -100,7 +95,8 @@ live query ──▶ providers/<name>.py ──▶ NormalizedItem ──┬─�
   `federation.py` backs `run.py websearch` and the web UI's `/api/federated`,
   and is what finally puts `query_planner` on a real search path.
 - **CLI**: `run.py` subcommands — `init`, `ingest`, `search`, **`websearch`**,
-  **`sources`**, `digest`, `health`, `stats`, `export`, `serve`.
+  **`sources`**, `digest`, `health`, `stats`, `export`, **`export-index`**, `serve`.
+  `websearch` takes `--mode` (see Search modes below).
 - **Web UI endpoints**: `GET /`, `GET /api/connectors`, `GET /api/search`
   (both unchanged from v1), plus `GET /api/nav`, `GET /api/federated`,
   `GET|POST /api/prefs`, `POST /api/save`.
@@ -111,7 +107,7 @@ live query ──▶ providers/<name>.py ──▶ NormalizedItem ──┬─�
 
 ```bash
 cd /Users/themainframe/claude_git_home/stunning-octo-spoon
-python3 -m unittest discover -s tests      # full suite (102 tests) — do this after any change
+python3 -m unittest discover -s tests      # full suite (130 tests) — do this after any change
 python3 run.py stats                       # sanity: should report 6,693 items
 python3 run.py serve                       # web UI at http://localhost:8080
 python3 run.py search "query" --indexes arena --limit 20   # local corpus only
@@ -290,6 +286,30 @@ Deployment note: the owner's cloudflared tunnel maps `library.bluebear.one` to
 `localhost:8080` (Calibre). **Never run `serve` on 8080** — anything on that
 port is published at that hostname. Use `--port 8090`.
 
+### Search modes (`search_modes.py`)
+
+The four presets `query_planner` has advertised since it landed now do something.
+`plan_query` routes them to connector-*group* names with no provider behind them;
+`search_modes.plan_search_mode()` translates each into operations federation can
+actually perform — widen the source set, move the sliders, add a query pass,
+re-rank the union:
+
+| Mode | What it actually does |
+|---|---|
+| `seed_and_mutate` | Runs the query, mines terms shared by ≥2 of its own results, runs a second pass on those. Novelty weighted up. |
+| `contrarian` | Diversity forced to 1.0, adds academic sources, second pass appends critique/debate terms. |
+| `time_tunnel` | Recency weighting to 0, adds long-reach sources, re-ranks by round-robin across decades. |
+| `materiality` | Adds image/archive sources, weights them up, promotes items whose content type is a scan/image/collection. |
+
+Rules that keep them honest: a mode **only adds sources that exist** (so it can
+never promise coverage this build lacks), extra passes are capped at
+`MAX_EXTRA_PASSES`, and multi-pass outcomes are merged so the UI strip still
+reports each source once.
+
+**The static console re-implements all four in JS.** Change a mode in Python and
+you must change `static_console/research-console.html` too — including the
+shared stopword list used by term mining.
+
 ### The corpus boundary (important)
 
 Live results are cached in **`web_cache_items`**, never in `normalized_items`.
@@ -341,8 +361,6 @@ Other open threads:
 
 - `run.py search` still uses `LocalIndexService` alone; `websearch` is the
   federated path. Merging the two commands is a judgement call left to the owner.
-- Search-mode presets (`seed_and_mutate`, `contrarian`, `time_tunnel`,
-  `materiality`) are exposed by `/api/nav` but not yet wired to behavior.
 - Live web results are not enriched (no facets/graph edges) until saved.
 
 ### Where the vision is written down

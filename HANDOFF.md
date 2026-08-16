@@ -1,11 +1,10 @@
 # Handoff — 2026-08-16
 
-Branch: **`claude/auto-agent-web-search-98c012`** (not pushed — pushing and
-merging are the owner's call, per [AGENTS.md](AGENTS.md) §7).
-Base: `origin/main` @ `5480d06` (PR #13, merged), plus the two doc commits that
-the merge left behind on `feat/arena-connector`.
+Branch: **`claude/auto-agent-web-search-98c012`**.
+PRs **#14** (federated web search) and **#15** (static console + export-index)
+are merged into `main`. This branch now carries the search modes on top.
 
-**102 tests pass** (was 46). Stdlib only, `unittest` only, no new dependencies,
+**130 tests pass** (was 46). Stdlib only, `unittest` only, no new dependencies,
 no network access in the test suite.
 
 ---
@@ -99,10 +98,9 @@ and persisted settings. Every v1 endpoint (`/`, `/api/connectors`,
 
 ## What's next, roughly in order of payoff
 
-1. **Wire the search-mode presets.** `seed_and_mutate`, `contrarian`,
-   `time_tunnel`, `materiality` are already served by `/api/nav` and rendered as
-   data, but nothing consumes the selection yet. `federation.py` is the natural
-   place — each mode is a transform on sliders + source selection.
+1. **~~Wire the search-mode presets.~~ Done** — see `search_modes.py` and
+   AGENTS.md §"Search modes". All four are live in the CLI (`--mode`), the web
+   UI, and the static console.
 2. **Enrich saved web items.** `save_web_item_to_library` runs
    `upsert_item_with_enrichment`, so facets are extracted on save — but nothing
    re-enriches items saved before a change to `enrichment.py`. A
@@ -124,8 +122,8 @@ From `/Users/themainframe/claude_git_home/stunning-octo-spoon` (the canonical
 clone — note this branch was developed in a worktree under `Documents/GitHub`):
 
 ```bash
-git fetch && git checkout claude/auto-agent-web-search-98c012
-python3 -m unittest discover -s tests    # expect 102 passing
+git fetch && git checkout main
+python3 -m unittest discover -s tests    # expect 130 passing
 python3 run.py sources                   # see what's wired
 python3 run.py serve                     # then open http://localhost:8080
 ```
