@@ -1,5 +1,21 @@
 # stunning-octo-spoon
 
+A personal, offline-first research search engine. Connectors pull items from
+Raindrop, Readwise Reader, Are.na, and more into one local SQLite database and
+let you search across all of it — full-text plus semantic neighbors. Pure Python
+3.10+ standard library; `unittest` only.
+
+**Documentation**
+- **[USER_GUIDE.md](USER_GUIDE.md)** — how to search (web UI + CLI), filtering, tips.
+- **[AGENTS.md](AGENTS.md)** — for anyone (agent or human) working on the code: where things live, current state, the Are.na re-sync procedure, safety rules, troubleshooting.
+- **[ARCHITECTURE.md](ARCHITECTURE.md)** — data-flow diagram.
+
+Quick start:
+```bash
+python3 run.py serve      # web UI at http://localhost:8080
+python3 run.py search "cartography" --indexes arena
+```
+
 ## Query Planner Module
 
 This repository now includes a `query_planner` module for routing search queries to connector groups by intent.
