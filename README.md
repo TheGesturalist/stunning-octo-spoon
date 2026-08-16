@@ -15,6 +15,7 @@ Pure Python 3.10+ standard library; `unittest` only; no API keys required.
 - **[USER_GUIDE.md](USER_GUIDE.md)** — how to search (web UI + CLI), sources, bangs, ranking controls.
 - **[AGENTS.md](AGENTS.md)** — for anyone (agent or human) working on the code: where things live, current state, source constraints, the Are.na re-sync procedure, safety rules, troubleshooting.
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** — data-flow diagram.
+- **[static_console/README.md](static_console/README.md)** — publishing a browser-only console to a static site (MkDocs/Firebase), and hosting the full app behind Cloudflare Access.
 
 Quick start:
 ```bash

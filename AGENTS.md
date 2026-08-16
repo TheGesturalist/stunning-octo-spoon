@@ -271,6 +271,25 @@ scored by identical rules rather than merged after the fact.
 - **Semantic Scholar** is not wired up: unauthenticated requests 429 immediately
   and the owner chose to lean on OpenAlex instead.
 
+### Publishing (`static_console/`, `run.py export-index`)
+
+There is a second, browser-only build of the console for a static host — see
+[static_console/README.md](static_console/README.md). It ports the source list
+and the whole scoring path into JS, so **if you change ranking in Python, change
+it there too or the two consoles disagree.** arXiv and PDR are absent from it
+because neither sends CORS headers.
+
+`run.py export-index` writes the publishable library index. `--connectors` is
+**required with no default**, and the command prints what it excluded — because
+publishing is a one-way door and an index can be crawled before anyone notices
+it shipped. The output (`library-index.json`) is git-ignored on purpose: it is
+generated, it goes stale, and a corpus dump should leave the machine by a
+deliberate act rather than by `git push`.
+
+Deployment note: the owner's cloudflared tunnel maps `library.bluebear.one` to
+`localhost:8080` (Calibre). **Never run `serve` on 8080** — anything on that
+port is published at that hostname. Use `--port 8090`.
+
 ### The corpus boundary (important)
 
 Live results are cached in **`web_cache_items`**, never in `normalized_items`.

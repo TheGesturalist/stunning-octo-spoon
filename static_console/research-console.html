@@ -1,0 +1,523 @@
+<!doctype html>
+<!--
+  Research Console — static build.
+
+  A dependency-free, backend-free port of the spoon web UI for a static host
+  (MkDocs / Firebase / GitHub Pages). It runs the same federated search in the
+  browser, against the sources that permit cross-origin requests.
+
+  Differences from the served app (`run.py serve`), all deliberate:
+    - arXiv and Public Domain Review are absent: neither sends
+      Access-Control-Allow-Origin, so a browser cannot call them. They need a
+      proxy, which a static host does not have.
+    - The library is searched from a pre-built index (`library-index.json`,
+      produced by `run.py export-index`), so it covers titles/summaries rather
+      than full text.
+    - There is no "save to library" — writing needs the real app.
+
+  Ranking is a faithful port of query_planner.compute_rank_weights +
+  rank_candidates plus federation.py's length normalization and MMR pass, so
+  results are ordered the same way as the local app.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Research Console</title>
+<style>
+:root {
+  color-scheme: light dark;
+  --bg:#fafaf7; --fg:#1a1a1a; --muted:#666; --dim:#8a8a8a; --accent:#2a5d8f;
+  --card:#fff; --border:#e4e4e0; --badge:#efeee9; --mark:#ffe680;
+  --ok:#3a7d44; --err:#a33a3a; --nav:#f3f2ee;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg:#16171a; --fg:#e8e8e6; --muted:#999; --dim:#777; --accent:#7ab1e6;
+    --card:#1d1e22; --border:#2c2d31; --badge:#2c2d31; --mark:#6a5b1f;
+    --ok:#7fbf88; --err:#e08585; --nav:#191a1d;
+  }
+}
+.rc *, .rc *::before, .rc *::after { box-sizing: border-box; }
+.rc { background:var(--bg); color:var(--fg); font:15px/1.5 -apple-system, system-ui, sans-serif;
+      border:1px solid var(--border); border-radius:8px; overflow:hidden; }
+.rc header { padding:12px 16px; border-bottom:1px solid var(--border);
+             display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+.rc h1 { margin:0; font-size:15px; font-weight:600; white-space:nowrap; }
+.rc .meta { color:var(--muted); font-size:12px; }
+.rc .layout { display:grid; grid-template-columns:262px minmax(0,1fr); }
+.rc nav { background:var(--nav); border-right:1px solid var(--border); padding:14px 12px 28px;
+          max-height:78vh; overflow-y:auto; }
+.rc main { padding:16px 18px 28px; min-width:0; max-height:78vh; overflow-y:auto; }
+.rc .searchbar { display:flex; gap:6px; flex:1; min-width:220px; }
+.rc input[type=text] { flex:1; padding:8px 11px; font:inherit; background:var(--card); color:var(--fg);
+       border:1px solid var(--border); border-radius:6px; }
+.rc input[type=text]:focus { outline:2px solid var(--accent); outline-offset:-1px; }
+.rc button { padding:8px 13px; font:inherit; cursor:pointer; border-radius:6px;
+        background:var(--accent); color:#fff; border:1px solid var(--accent); }
+.rc button:hover { opacity:.9; }
+.rc button.ghost { background:transparent; color:var(--muted); border-color:var(--border); }
+.rc .nav-section { margin-bottom:15px; }
+.rc .nav-section h2 { font-size:10px; text-transform:uppercase; letter-spacing:.07em; color:var(--dim);
+                  margin:0 0 6px; font-weight:600; display:flex; justify-content:space-between; gap:6px; }
+.rc .nav-section h2 a { color:var(--dim); cursor:pointer; font-weight:400; text-transform:none; letter-spacing:0; }
+.rc .nav-section h2 a:hover { color:var(--accent); }
+.rc .src { display:flex; align-items:flex-start; gap:6px; padding:3px 4px; border-radius:4px;
+       cursor:pointer; font-size:12.5px; }
+.rc .src:hover { background:var(--card); }
+.rc .src input { margin-top:3px; flex-shrink:0; }
+.rc .src .label { flex:1; min-width:0; }
+.rc .src .hint { display:block; color:var(--dim); font-size:10.5px; }
+.rc .src .bang { color:var(--accent); font-size:10.5px; font-family:ui-monospace,monospace; }
+.rc .weights { border-top:1px solid var(--border); padding-top:12px; }
+.rc .wrow { margin-bottom:10px; }
+.rc .wrow label { display:flex; justify-content:space-between; font-size:10.5px; color:var(--muted); margin-bottom:2px; }
+.rc .wrow input[type=range], .rc .dial input { width:100%; accent-color:var(--accent); }
+.rc .dial { font-size:11.5px; margin-bottom:5px; }
+.rc .dial span { display:flex; justify-content:space-between; gap:6px; }
+.rc .dial em { color:var(--dim); font-style:normal; font-variant-numeric:tabular-nums; }
+.rc .status { color:var(--muted); font-size:12.5px; margin-bottom:8px; }
+.rc .outcomes { display:flex; flex-wrap:wrap; gap:4px; margin-bottom:12px; }
+.rc .pill { font-size:10.5px; padding:2px 7px; border-radius:10px; border:1px solid var(--border);
+        background:var(--card); color:var(--muted); white-space:nowrap; }
+.rc .pill.ok { border-color:var(--ok); color:var(--ok); }
+.rc .pill.err { border-color:var(--err); color:var(--err); }
+.rc .card { background:var(--card); border:1px solid var(--border); border-radius:8px;
+        padding:12px 14px; margin-bottom:9px; }
+.rc .card h3 { margin:0 0 3px; font-size:14.5px; font-weight:600; }
+.rc .card h3 a { color:var(--fg); text-decoration:none; }
+.rc .card h3 a:hover { color:var(--accent); }
+.rc .badge { display:inline-block; padding:1px 6px; font-size:9.5px; background:var(--badge);
+         color:var(--muted); border-radius:4px; margin-left:5px; vertical-align:middle; }
+.rc .badge.lib { color:var(--ok); }
+.rc .src-url { font-size:10.5px; color:var(--dim); word-break:break-all; }
+.rc .snippet { margin:6px 0; font-size:13.5px; }
+.rc .snippet mark { background:var(--mark); padding:0 2px; border-radius:2px; }
+.rc .scores { font-size:10.5px; color:var(--dim); font-variant-numeric:tabular-nums; }
+.rc .empty { color:var(--muted); text-align:center; padding:40px 20px; }
+.rc .note { font-size:11px; color:var(--dim); margin-top:14px; border-top:1px solid var(--border); padding-top:10px; }
+@media (max-width:820px) { .rc .layout { grid-template-columns:1fr; }
+  .rc nav { border-right:none; border-bottom:1px solid var(--border); max-height:none; }
+  .rc main { max-height:none; } }
+</style>
+</head>
+<body>
+
+<div class="rc" id="rc">
+  <header>
+    <h1>Research Console</h1>
+    <form class="searchbar" id="rcForm">
+      <input type="text" id="rcQ" placeholder="Search…  (try !wphd, !oa, !wpl)">
+      <button type="submit">Search</button>
+    </form>
+    <div class="meta" id="rcMeta">…</div>
+  </header>
+  <div class="layout">
+    <nav>
+      <div id="rcNav"></div>
+      <div class="weights">
+        <h2 style="font-size:10px;text-transform:uppercase;letter-spacing:.07em;color:var(--dim);margin:0 0 8px;font-weight:600;">Ranking weights</h2>
+        <div id="rcSliders"></div>
+        <h2 style="font-size:10px;text-transform:uppercase;letter-spacing:.07em;color:var(--dim);margin:10px 0 6px;font-weight:600;">Source trust</h2>
+        <div id="rcDials"></div>
+      </div>
+      <div class="note" id="rcNote"></div>
+    </nav>
+    <main>
+      <div class="status" id="rcStatus"></div>
+      <div class="outcomes" id="rcOutcomes"></div>
+      <div id="rcResults"><div class="empty">Pick sources at left, type a query, hit Search.</div></div>
+    </main>
+  </div>
+</div>
+
+<script>
+(function () {
+"use strict";
+
+// Path to the index produced by `run.py export-index`. Relative to this page.
+const LIBRARY_INDEX_URL = "library-index.json";
+
+const EN = "en.wikipedia.org";
+const wiki = (bang, label, site, ns, extra) => Object.assign(
+  { id: "wikimedia:" + bang, bang, label, group: extra && extra.group || "Wikimedia", kind: "wikimedia",
+    site, ns, hint: extra && extra.hint || site }, extra || {});
+
+const SOURCES = [
+  wiki("wp","English Wikipedia",EN,0,{group:"Wikimedia · General",hint:"Mainspace articles"}),
+  wiki("meta","Meta-Wiki","meta.wikimedia.org",0,{group:"Wikimedia · General"}),
+  wiki("mw","MediaWiki","www.mediawiki.org",0,{group:"Wikimedia · General"}),
+  wiki("wix","WikiIndex","wikiindex.org",0,{group:"Wikimedia · General",apiPath:"/api.php"}),
+  wiki("wpp","Project Pages",EN,4,{group:"Wikimedia · Namespaces"}),
+  wiki("wpmw","MediaWiki Pages",EN,8,{group:"Wikimedia · Namespaces"}),
+  wiki("wpc","Category Pages",EN,14,{group:"Wikimedia · Namespaces"}),
+  wiki("wph","Help Pages",EN,12,{group:"Wikimedia · Namespaces"}),
+  wiki("wpi","Image Namespace",EN,6,{group:"Wikimedia · Namespaces"}),
+  wiki("wpu","User Pages",EN,2,{group:"Wikimedia · Namespaces"}),
+  wiki("wpt","Template Pages",EN,10,{group:"Wikimedia · Namespaces"}),
+  wiki("wphd","Help Desk",EN,4,{group:"Wikimedia · Community",prefix:"Wikipedia:Help desk"}),
+  wiki("wpfaq","FAQ",EN,4,{group:"Wikimedia · Community",prefix:"Wikipedia:FAQ"}),
+  wiki("wps","Signpost",EN,4,{group:"Wikimedia · Community",prefix:"Wikipedia:Wikipedia Signpost"}),
+  wiki("wptm","Template Messages",EN,4,{group:"Wikimedia · Community",prefix:"Wikipedia:Template messages"}),
+  wiki("vpg","Village Pump (General)",EN,4,{group:"Wikimedia · Community",prefix:"Wikipedia:Village pump"}),
+  wiki("vpp","Village Pump (Policy)",EN,4,{group:"Wikimedia · Community",prefix:"Wikipedia:Village pump (policy)"}),
+  wiki("vpt","Village Pump (Technical)",EN,4,{group:"Wikimedia · Community",prefix:"Wikipedia:Village pump (technical)"}),
+  wiki("vpo","Village Pump (Other)",EN,4,{group:"Wikimedia · Community",prefix:"Wikipedia:Village pump (miscellaneous)"}),
+  wiki("wpl",'List Articles (intitle:"List of")',EN,0,{group:"Wikimedia · Operators",
+       operator:'intitle:"List of"', titleRe:/^lists? of /i, hint:"Titles beginning 'List of'"}),
+  { id:"academic:openalex", bang:"oa", label:"OpenAlex", group:"Academic", kind:"openalex",
+    hint:"~250M works · open metadata" },
+  { id:"academic:crossref", bang:"cr", label:"Crossref", group:"Academic", kind:"crossref",
+    hint:"DOI registry" },
+  { id:"academic:doaj", bang:"doaj", label:"DOAJ", group:"Academic", kind:"doaj",
+    hint:"Open-access journal articles" },
+  { id:"arena:channels", bang:"arc", label:"Are.na channels", group:"Are.na", kind:"arena",
+    hint:"All of Are.na" },
+  { id:"cultural:open_culture", bang:"oc", label:"Open Culture", group:"Canonical & cultural",
+    kind:"openculture", hint:"Recent posts only" },
+  { id:"library:all", bang:"lib", label:"My library", group:"Your library", kind:"library",
+    hint:"loading…" }
+];
+
+const DEFAULTS = ["wikimedia:wp","academic:openalex","arena:channels","library:all"];
+const BANGS = {}; SOURCES.forEach(s => { if (s.bang) BANGS[s.bang] = s.id; });
+const BY_ID = {}; SOURCES.forEach(s => BY_ID[s.id] = s);
+
+let selected = new Set(DEFAULTS);
+const sliders = { rs: .5, fd: .5, rt: .5 };
+const dials = {};
+let libraryIndex = null;
+
+/* ---------- scoring: ports of local_index_service + federation ---------- */
+const WORD = /[A-Za-z0-9']+/g;
+const tokenize = (t) => (String(t || "").toLowerCase().match(WORD) || []);
+function termFreq(tokens) { const m = Object.create(null); for (const t of tokens) m[t] = (m[t]||0)+1; return m; }
+function cosine(a, b) {
+  const ka = Object.keys(a), kb = Object.keys(b);
+  if (!ka.length || !kb.length) return 0;
+  let dot = 0; for (const k of ka) if (b[k]) dot += a[k]*b[k];
+  let na = 0; for (const k of ka) na += a[k]*a[k];
+  let nb = 0; for (const k of kb) nb += b[k]*b[k];
+  return (na && nb) ? dot/(Math.sqrt(na)*Math.sqrt(nb)) : 0;
+}
+function findMatches(text, terms) {
+  const low = String(text||"").toLowerCase(), out = [];
+  for (const term of new Set(terms)) {
+    let i = low.indexOf(term);
+    while (i !== -1) { out.push({term, start:i, end:i+term.length}); i = low.indexOf(term, i+term.length); }
+  }
+  return out.sort((x,y)=>x.start-y.start);
+}
+function lexicalScore(text, terms) {
+  if (!terms.length || !text) return 0;
+  const m = findMatches(text, terms);
+  if (!m.length) return 0;
+  const distinct = new Set(m.map(x=>x.term)).size;
+  return .7*(distinct/new Set(terms).size) + .3*Math.min(1, m.length/10);
+}
+// Mirrors federation.length_confidence — stops one-word titles scoring a
+// perfect cosine and sweeping the page.
+const lengthConfidence = (n) => n <= 0 ? 0 : Math.min(1, Math.log1p(n)/Math.log1p(30));
+const HALF_LIFE_DAYS = 365*5;
+function recencyScore(d) {
+  if (!d) return .5;
+  const t = Date.parse(String(d).length === 4 ? d + "-01-01" : d);
+  if (isNaN(t)) return .5;
+  return Math.exp(-Math.max(0,(Date.now()-t)/86400000)/HALF_LIFE_DAYS);
+}
+function snippet(text, matches, radius) {
+  radius = radius || 60;
+  if (!text) return "";
+  const esc = (s)=>s.replace(/[&<>"]/g,(c)=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+  if (!matches.length) return esc(text.slice(0, radius*2));
+  const first = matches[0];
+  const start = Math.max(0, first.start-radius), end = Math.min(text.length, first.end+radius);
+  let out = "", cur = start;
+  for (const m of matches) {
+    if (m.start < start || m.end > end) continue;
+    out += esc(text.slice(cur, m.start)) + "<mark>" + esc(text.slice(m.start, m.end)) + "</mark>";
+    cur = m.end;
+  }
+  return out + esc(text.slice(cur, end));
+}
+// Port of query_planner.compute_rank_weights.
+function computeWeights(s, prefStrength) {
+  const w = {
+    lexical: .20 + .40*s.rs, semantic: .20 + .35*s.rs, novelty: .10 + .35*(1-s.rs),
+    recency: .15 + .45*s.rt, diversity: .10 + .35*s.fd,
+    source_trust: .05 + .25*prefStrength
+  };
+  let total = 0; for (const k in w) total += w[k];
+  for (const k in w) w[k] /= total;
+  return w;
+}
+function prefSignal(d) {
+  const vals = Object.values(d).filter(v=>v).map(Math.abs);
+  if (!vals.length) return 0;
+  return Math.min(vals.reduce((a,b)=>a+b,0)/(vals.length*0.5), 1);
+}
+
+/* ---------- source adapters (CORS-permitting endpoints only) ---------- */
+const j = async (url) => { const r = await fetch(url); if (!r.ok) throw new Error("HTTP "+r.status); return r.json(); };
+
+async function runSource(src, q, limit) {
+  if (src.kind === "wikimedia") {
+    let expr = q;
+    if (src.operator) expr += " " + src.operator;
+    if (src.prefix) expr += " prefix:" + src.prefix;
+    const filtered = !!(src.prefix || src.titleRe);
+    const api = "https://" + src.site + (src.apiPath || "/w/api.php");
+    const d = await j(api + "?action=query&list=search&format=json&formatversion=2&origin=*"
+      + "&srsearch=" + encodeURIComponent(expr) + "&srnamespace=" + src.ns
+      + "&srlimit=" + (filtered ? Math.min(50, limit*4) : limit) + "&srprop=snippet|timestamp|wordcount");
+    let hits = ((d.query||{}).search)||[];
+    // CirrusSearch matches redirect titles, so re-check the real one.
+    if (src.titleRe) hits = hits.filter(h => src.titleRe.test(h.title||""));
+    if (src.prefix) hits = hits.filter(h => (h.title||"").toLowerCase().startsWith(src.prefix.toLowerCase()));
+    return hits.slice(0, limit).map(h => ({
+      title: h.title, url: "https://"+src.site+"/wiki/"+encodeURIComponent((h.title||"").replace(/ /g,"_")),
+      summary: (h.snippet||"").replace(/<[^>]+>/g," ").replace(/\s+/g," ").trim(),
+      date: h.timestamp
+    }));
+  }
+  if (src.kind === "openalex") {
+    const d = await j("https://api.openalex.org/works?per-page="+limit+"&search="+encodeURIComponent(q));
+    return (d.results||[]).map(w => {
+      let abs = null;
+      if (w.abstract_inverted_index) {
+        const pos = [];
+        for (const word in w.abstract_inverted_index)
+          for (const p of w.abstract_inverted_index[word]) pos.push([p, word]);
+        abs = pos.sort((a,b)=>a[0]-b[0]).map(x=>x[1]).join(" ");
+      }
+      const loc = w.primary_location || {};
+      return { title: w.display_name, url: (w.open_access||{}).oa_url || loc.landing_page_url || w.doi,
+               summary: abs, date: w.publication_date,
+               author: (w.authorships||[]).slice(0,5).map(a=>(a.author||{}).display_name).filter(Boolean).join(", ") };
+    });
+  }
+  if (src.kind === "crossref") {
+    const d = await j("https://api.crossref.org/works?rows="+limit+"&query="+encodeURIComponent(q));
+    return (((d.message||{}).items)||[]).map(w => ({
+      title: (w.title||[])[0], url: w.URL,
+      summary: (w.abstract||"").replace(/<[^>]+>/g," ").replace(/\s+/g," ").trim(),
+      date: ((w.issued||{})["date-parts"]||[[]])[0].join("-"),
+      author: (w.author||[]).slice(0,5).map(a=>[a.given,a.family].filter(Boolean).join(" ")).join(", ")
+    }));
+  }
+  if (src.kind === "doaj") {
+    const d = await j("https://doaj.org/api/search/articles/"+encodeURIComponent(q)+"?pageSize="+limit);
+    return (d.results||[]).map(r => {
+      const b = r.bibjson||{};
+      return { title: b.title, url: ((b.link||[])[0]||{}).url, summary: b.abstract,
+               date: b.year ? String(b.year) : null,
+               author: (b.author||[]).slice(0,5).map(a=>a.name).filter(Boolean).join(", ") };
+    });
+  }
+  if (src.kind === "arena") {
+    const d = await j("https://api.are.na/v2/search?per="+limit+"&q="+encodeURIComponent(q));
+    return (d.channels||[]).map(c => ({
+      title: c.title, url: "https://www.are.na/"+((c.user||{}).slug||"x")+"/"+c.slug,
+      summary: (c.metadata||{}).description, date: c.updated_at,
+      author: (c.user||{}).full_name || (c.user||{}).username
+    }));
+  }
+  if (src.kind === "openculture") {
+    const d = await j("https://www.openculture.com/wp-json/wp/v2/posts?per_page="+Math.min(limit*3,60)
+      + "&_fields=id,link,date,title,excerpt&search=" + encodeURIComponent(q));
+    const strip = (s)=>String(s||"").replace(/<[^>]+>/g," ").replace(/\s+/g," ").trim();
+    return (Array.isArray(d)?d:[]).slice(0,limit).map(p => ({
+      title: strip((p.title||{}).rendered), url: p.link,
+      summary: strip((p.excerpt||{}).rendered), date: p.date
+    }));
+  }
+  if (src.kind === "library") {
+    if (!libraryIndex) throw new Error("index not loaded");
+    const terms = tokenize(q);
+    const scored = [];
+    for (const it of libraryIndex.items) {
+      const hay = [it.t, it.s, (it.g||[]).join(" ")].filter(Boolean).join(" ");
+      const n = findMatches(hay, terms).length;
+      if (n) scored.push([n, it]);
+    }
+    scored.sort((a,b)=>b[0]-a[0]);
+    return scored.slice(0, limit).map(([, it]) => ({
+      title: it.t, url: it.u, summary: it.s, date: it.d, tags: it.g || [], library: true
+    }));
+  }
+  return [];
+}
+
+/* ---------- orchestration ---------- */
+function parseBangs(q) {
+  const ids = []; let plain = q;
+  const re = /(^|\s)!([a-z0-9_]+)/gi; let m;
+  while ((m = re.exec(q)) !== null) {
+    const id = BANGS[m[2].toLowerCase()];
+    if (id) { if (ids.indexOf(id) === -1) ids.push(id); plain = plain.replace(m[0], " "); }
+  }
+  return [plain.trim().replace(/\s+/g," "), ids];
+}
+
+async function search(ev) {
+  if (ev) ev.preventDefault();
+  const raw = document.getElementById("rcQ").value.trim();
+  if (!raw) return;
+  const [plain, bangIds] = parseBangs(raw);
+  const q = plain || raw;
+  const chosen = (bangIds.length ? bangIds : [...selected]).map(id => BY_ID[id]).filter(Boolean);
+  const status = document.getElementById("rcStatus");
+  if (!chosen.length) { status.textContent = "No sources selected."; return; }
+
+  status.textContent = "Searching…";
+  document.getElementById("rcResults").innerHTML = "";
+  document.getElementById("rcOutcomes").innerHTML = "";
+  const t0 = performance.now();
+
+  const settled = await Promise.all(chosen.map(async (src) => {
+    const s0 = performance.now();
+    try { return { src, items: await runSource(src, q, 15), ms: Math.round(performance.now()-s0) }; }
+    catch (e) { return { src, items: [], ms: Math.round(performance.now()-s0), error: e.message }; }
+  }));
+
+  document.getElementById("rcOutcomes").innerHTML = settled.map(o =>
+    `<span class="pill ${o.error ? "err" : "ok"}">${escHtml(o.src.label)}: ${o.error ? escHtml(o.error) : o.items.length + " · " + o.ms + "ms"}</span>`
+  ).join("");
+
+  const terms = tokenize(q), qv = termFreq(terms);
+  const strength = prefSignal(dials);
+  const weights = computeWeights(sliders, strength);
+  const perSource = {};
+  settled.forEach(o => perSource[o.src.id] = o.items.length);
+
+  let cands = [];
+  for (const o of settled) for (const it of o.items) {
+    const text = [it.title, it.summary].filter(Boolean).join(" ");
+    const toks = tokenize(text);
+    const comp = {
+      lexical: lexicalScore(text, terms),
+      semantic: cosine(qv, termFreq(toks)) * lengthConfidence(toks.length),
+      novelty: it.library ? .3 : 1,
+      recency: recencyScore(it.date),
+      diversity: 1/Math.max(1, perSource[o.src.id]),
+      source_trust: Math.max(-1, Math.min(1, dials[o.src.id] || 0))
+    };
+    let score = 0; for (const k in weights) score += weights[k]*comp[k];
+    cands.push({ it, src: o.src, score, comp, text });
+  }
+  cands.sort((a,b)=>b.score-a.score);
+
+  // MMR pass — same as federation._diversify.
+  const penalty = .25*sliders.fd, out = [], seen = {};
+  while (cands.length && out.length < 25) {
+    let bi = 0, bv = -Infinity;
+    for (let i = 0; i < cands.length; i++) {
+      const v = cands[i].score - penalty*(seen[cands[i].src.id]||0);
+      if (v > bv) { bv = v; bi = i; }
+    }
+    const pick = cands.splice(bi,1)[0];
+    seen[pick.src.id] = (seen[pick.src.id]||0)+1;
+    out.push(pick);
+  }
+
+  const ms = Math.round(performance.now()-t0);
+  status.textContent = `${out.length} result(s) in ${ms} ms for "${q}"`
+    + (bangIds.length ? ` · bang override: ${bangIds.join(", ")}` : "");
+  document.getElementById("rcResults").innerHTML = out.length
+    ? out.map(renderCard).join("")
+    : `<div class="empty">No results. Try more sources, or a broader term.</div>`;
+}
+
+const escHtml = (s) => String(s == null ? "" : s).replace(/[&<>"]/g,(c)=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+function renderCard(r) {
+  const bits = ["lexical","semantic","recency","novelty","diversity"]
+    .map(k => k.slice(0,2)+"="+r.comp[k].toFixed(2)).join("  ");
+  return `<div class="card">
+    <h3><a href="${escHtml(r.it.url||"#")}" target="_blank" rel="noopener">${escHtml(r.it.title||"(untitled)")}</a>
+      <span class="badge">${escHtml(r.src.label)}</span>${r.it.library ? '<span class="badge lib">library</span>' : ""}</h3>
+    ${r.it.author ? `<div class="src-url">${escHtml(r.it.author)}</div>` : ""}
+    <div class="src-url">${escHtml(r.it.url||"")}</div>
+    <div class="snippet">${snippet(r.text, findMatches(r.text, tokenize(document.getElementById("rcQ").value)))}</div>
+    <div class="scores">score ${r.score.toFixed(4)} · ${escHtml(bits)}</div>
+  </div>`;
+}
+
+/* ---------- UI ---------- */
+function groups() {
+  const g = [];
+  for (const s of SOURCES) {
+    let bucket = g.find(x=>x.name===s.group);
+    if (!bucket) { bucket = {name:s.group, items:[]}; g.push(bucket); }
+    bucket.items.push(s);
+  }
+  return g;
+}
+function renderNav() {
+  document.getElementById("rcNav").innerHTML = groups().map((g,gi)=>`
+    <div class="nav-section"><h2>${escHtml(g.name)}<span><a data-g="${gi}" data-a="all">all</a> <a data-g="${gi}" data-a="none">none</a></span></h2>
+    ${g.items.map(s=>`<label class="src">
+      <input type="checkbox" data-id="${escHtml(s.id)}" ${selected.has(s.id)?"checked":""}>
+      <span class="label">${escHtml(s.label)}${s.hint?`<span class="hint">${escHtml(s.hint)}</span>`:""}</span>
+      ${s.bang?`<span class="bang">!${escHtml(s.bang)}</span>`:""}</label>`).join("")}</div>`).join("");
+  document.querySelectorAll('#rcNav input[type=checkbox]').forEach(el=>{
+    el.addEventListener("change",()=>{ el.checked?selected.add(el.dataset.id):selected.delete(el.dataset.id); renderDials(); });
+  });
+  document.querySelectorAll("#rcNav a[data-a]").forEach(el=>{
+    el.addEventListener("click",()=>{ const g=groups()[+el.dataset.g];
+      g.items.forEach(s=> el.dataset.a==="all"?selected.add(s.id):selected.delete(s.id));
+      renderNav(); renderDials(); });
+  });
+}
+function renderSliders() {
+  const rows = [["rs","Relevant","Surprising"],["fd","Focused","Diverse"],["rt","Timeless","Recent"]];
+  document.getElementById("rcSliders").innerHTML = rows.map(([k,a,b])=>
+    `<div class="wrow"><label><span>${a}</span><span>${b}</span></label>
+     <input type="range" min="0" max="1" step="0.05" value="${sliders[k]}" data-k="${k}"></div>`).join("");
+  document.querySelectorAll("#rcSliders input").forEach(el=>
+    el.addEventListener("input",()=>{ sliders[el.dataset.k]=parseFloat(el.value); }));
+}
+function renderDials() {
+  const chosen = SOURCES.filter(s=>selected.has(s.id));
+  const el = document.getElementById("rcDials");
+  if (!chosen.length) { el.innerHTML = `<div style="font-size:11px;color:var(--dim)">Select sources to weight them.</div>`; return; }
+  el.innerHTML = chosen.map(s=>{ const v = dials[s.id]||0;
+    return `<div class="dial"><span>${escHtml(s.label)}<em data-v="${escHtml(s.id)}">${v>0?"+":""}${v.toFixed(2)}</em></span>
+      <input type="range" min="-1" max="1" step="0.05" value="${v}" data-w="${escHtml(s.id)}"></div>`; }).join("");
+  el.querySelectorAll("input").forEach(input=>input.addEventListener("input",()=>{
+    const v = parseFloat(input.value); dials[input.dataset.w] = v;
+    const o = el.querySelector(`em[data-v="${CSS.escape(input.dataset.w)}"]`);
+    if (o) o.textContent = (v>0?"+":"")+v.toFixed(2);
+  }));
+}
+
+async function init() {
+  renderNav(); renderSliders(); renderDials();
+  document.getElementById("rcNote").innerHTML =
+    "arXiv and the Public Domain Review are absent here: neither allows cross-origin browser requests. "
+    + "They are available in the full local app.";
+  const lib = BY_ID["library:all"];
+  try {
+    libraryIndex = await j(LIBRARY_INDEX_URL);
+    lib.hint = libraryIndex.count.toLocaleString() + " items · " + libraryIndex.connectors.join(", ");
+    document.getElementById("rcMeta").textContent =
+      libraryIndex.count.toLocaleString() + " library items · " + SOURCES.length + " sources";
+  } catch (e) {
+    selected.delete("library:all");
+    lib.hint = "index not found — web sources only";
+    document.getElementById("rcMeta").textContent = (SOURCES.length-1) + " web sources";
+  }
+  renderNav(); renderDials();
+  document.getElementById("rcForm").addEventListener("submit", search);
+  // Bind Enter directly too. Implicit form submission is easy to lose when this
+  // markup is embedded in a host page (MkDocs wraps content in its own <form>
+  // for search, and nested forms don't submit), so don't rely on it.
+  document.getElementById("rcQ").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); search(e); }
+  });
+}
+init();
+})();
+</script>
+</body>
+</html>
