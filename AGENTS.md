@@ -45,8 +45,9 @@ installs. Tests are `unittest`.
   connector, the `query_planner.py` byte-corruption fix, the live web search
   work (`providers/`, `federation.py`, `web_ui.py`), and the static console.
   The old warning about `main` carrying that corruption no longer applies.
-- Active branch: **`claude/auto-agent-web-search-98c012`** — search modes
-  (`search_modes.py`) on top of merged `main`. **130 tests pass.**
+- **PR #16 merged too.** Everything is on `main` (`490717a`): live web search,
+  the static console + `export-index`, and the search modes. **130 tests pass.**
+  Work from `main`; the `claude/auto-agent-web-search-98c012` branch is drained.
 - The full Are.na re-ingest for user `johnny-dicanero` is **done**: 79
   non-private channels → 838 unique blocks.
 - Keep files UTF-8 clean — the historical `query_planner.py` corruption came
@@ -68,7 +69,7 @@ source APIs ──▶ connectors/<name>.py ──▶ NormalizedItem ──▶ co
                                                             provenance_events, …
                                                                  │
                 run.py search / serve ◀── LocalIndexService ◀────┘
-                (CLI + web UI :8080)     (local_index_service.py:
+                (CLI + web UI :8090)     (local_index_service.py:
                                           BM25 + semantic neighbors)
 
 live query ──▶ providers/<name>.py ──▶ NormalizedItem ──┬─▶ web_cache_items
@@ -109,11 +110,13 @@ live query ──▶ providers/<name>.py ──▶ NormalizedItem ──┬─�
 cd /Users/themainframe/claude_git_home/stunning-octo-spoon
 python3 -m unittest discover -s tests      # full suite (130 tests) — do this after any change
 python3 run.py stats                       # sanity: should report 6,693 items
-python3 run.py serve                       # web UI at http://localhost:8080
+python3 run.py serve --port 8090           # web UI at http://localhost:8090 (NOT 8080 — see §9)
 python3 run.py search "query" --indexes arena --limit 20   # local corpus only
 python3 run.py sources                     # every searchable source + its bang
 python3 run.py websearch "query" --explain # library + live web, ranked together
 python3 run.py websearch '!wphd deletion'  # one constrained source via its bang
+python3 run.py websearch "query" --mode time_tunnel   # exploratory modes
+python3 run.py export-index --connectors raindrop_io,reader_io,arena -o library-index.json
 ```
 
 The test suite is fully mocked — it makes no network calls and needs no tokens.

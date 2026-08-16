@@ -1,6 +1,14 @@
 # Project Status: stunning-octo-spoon
 
-*Last updated: April 2026. Written for handoff — readable by both human owners and AI agents.*
+> **⚠️ Superseded — historical snapshot (April 2026).**
+> Kept for the narrative of how the project got here. Several statements below
+> are now false: the query planner *is* wired into search, the ranking sliders
+> and search-mode presets *are* reachable, the web UI is v2 with a left-hand
+> nav, and live web search exists. For current state read
+> **[AGENTS.md](AGENTS.md)**, **[USER_GUIDE.md](USER_GUIDE.md)** and
+> **[HANDOFF.md](HANDOFF.md)**.
+
+*Last updated: April 2026. Written for handoff.*
 
 ---
 
@@ -125,7 +133,7 @@ SPOON_TUMBLR_API_KEY, SPOON_TUMBLR_BLOG, SPOON_DB_PATH
 - Dark mode follows `prefers-color-scheme`
 - Binds to `127.0.0.1:8080` by default
 
-v1 is deliberately minimal — the planner's ranking sliders and search-mode presets are not wired (see "What does not exist yet" below).
+v1 was deliberately minimal. **Superseded:** the web UI is now v2 — left-hand source nav, ranking sliders, per-source trust dials and search modes are all wired. See USER_GUIDE.md.
 
 ### 10. Export
 
@@ -153,12 +161,17 @@ Supports `--connector NAME` and `--limit N` filters. `--output PATH` writes to a
 - All API connectors (Raindrop, Readwise, Tumblr, Internet Archive) — the code is there but hasn't been run against real credentials in this environment
 
 **What does not exist yet:**
-- The query planner is not yet wired to `run.py search` or to the web UI — its ranking sliders and search-mode presets (seed_and_mutate, contrarian, time_tunnel, materiality) are designed but unreachable. v2 of the web UI will expose these once the wiring lands.
+- ~~The query planner is not yet wired…~~ **Done.** `federation.py` puts the
+  planner on the search path; sliders, dials and all four search modes are live
+  in the CLI, the web UI and the static console (`search_modes.py`).
 - A way to re-enrich existing items without re-ingesting them
-- Any connection between the query planner's connector routing and the actual connector calls in `run.py` — right now `run.py ingest` targets one source at a time; the planner's multi-source fan-out is not wired to anything
+- ~~No connection between planner routing and actual calls…~~ **Done for
+  search**: `run.py websearch` fans out to many providers at once. Still true
+  for *ingest*, which remains one source at a time.
 
-**Known bugs:**
-- `--limit N` on `python run.py ingest readwise` is ignored — the connector pulls its default page size (100) regardless. Likely also affects raindrop/tumblr/internet_archive; not yet investigated.
+**Known bugs:** *(fixed since this snapshot)*
+- ~~`--limit N` on `run.py ingest readwise` is ignored~~ — fixed; see HANDOFF's
+  2026-06-17 entry and `tests/test_connector_limits.py`.
 
 ---
 
@@ -210,7 +223,7 @@ stunning-octo-spoon/
 
 - Python 3.10+, no external dependencies beyond the standard library (sqlite3, json, argparse, re, pathlib, urllib)
 - Database path defaults to `./spoon.db`; override with `SPOON_DB_PATH`
-- Run tests: `python -m pytest tests/`
+- Run tests: `python3 -m unittest discover -s tests` (**not** pytest — stdlib only)
 - The canonical content record is `connectors.schema.NormalizedItem` — everything flows through this
 - `upsert_item(db, item)` persists without enrichment; `upsert_item_with_enrichment(db, item)` runs the full pipeline
 - `LocalIndexService` takes `dict[str, list[IndexedDocument]]` keyed by connector name — `run.py` populates this from the DB via `_load_documents_from_db()`
