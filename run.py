@@ -134,6 +134,19 @@ def cmd_ingest(args: argparse.Namespace) -> None:
             sys.exit(1)
         from connectors.tumblr import TumblrConnector
         connector = TumblrConnector(blog_hostname=blog, api_key=api_key)
+    elif source == "arena":
+        if not args.channel and not args.user:
+            print(
+                "Error: --channel <slug[,slug...]> or --user <slug> is required for arena.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        from connectors.arena import ArenaConnector
+        connector = ArenaConnector(
+            channel=args.channel,
+            user=args.user,
+            token=args.token or config.arena_token(),
+        )
     elif source == "fixture":
         if not args.path:
             print("Error: --path is required for fixture mode.", file=sys.stderr)
@@ -143,7 +156,7 @@ def cmd_ingest(args: argparse.Namespace) -> None:
     else:
         print(f"Error: unknown source '{source}'.", file=sys.stderr)
         print(
-            "Supported: internet_archive, local_library, raindrop, readwise, tumblr, fixture",
+            "Supported: internet_archive, local_library, raindrop, readwise, tumblr, arena, fixture",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -627,7 +640,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_init.add_argument("--db", default=config.db_path(), metavar="PATH", help="Database path")
     # -- ingest --
     p_ingest = sub.add_parser("ingest", help="Ingest items from a source")
-    p_ingest.add_argument("source", help="Source name: internet_archive | local_library | raindrop | readwise | tumblr | fixture")
+    p_ingest.add_argument("source", help="Source name: internet_archive | local_library | raindrop | readwise | tumblr | arena | fixture")
     p_ingest.add_argument("--db", default=config.db_path(), metavar="PATH", help="Database path")
     p_ingest.add_argument("--limit", type=int, default=20, metavar="N", help="Max items to fetch")
     enrich_group = p_ingest.add_mutually_exclusive_group()
@@ -641,6 +654,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_ingest.add_argument("--collection", help="raindrop: collection ID (default 0)")
     p_ingest.add_argument("--blog", help="tumblr: blog hostname")
     p_ingest.add_argument("--api-key", dest="api_key", help="tumblr: API key")
+    p_ingest.add_argument("--channel", help="arena: channel slug(s), comma-separated")
+    p_ingest.add_argument("--user", help="arena: user slug (ingest their public channels)")
     # -- search --
     p_search = sub.add_parser("search", help="Search the local index")
     p_search.add_argument("query", help="Search query")
