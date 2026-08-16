@@ -18,6 +18,8 @@ Each Are.na *block* becomes one NormalizedItem. Blocks come in several classes
 
 from __future__ import annotations
 
+import time
+import urllib.error
 from typing import Any
 from urllib.parse import quote
 
@@ -60,6 +62,10 @@ class ArenaConnector(BaseConnector):
                 "ArenaConnector needs either channel=<slug[,slug...]> or user=<slug>."
             )
 
+    # 429 backoff (reactive — only sleeps when Are.na rate-limits us).
+    MAX_RETRIES = 6
+    MAX_BACKOFF = 60.0
+
     @property
     def _headers(self) -> dict[str, str]:
         # A real User-Agent is required (Cloudflare blocks the default urllib UA).
@@ -68,6 +74,23 @@ class ArenaConnector(BaseConnector):
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
         return headers
+
+    def _get(self, url: str) -> dict[str, Any]:
+        """get_json with reactive backoff on HTTP 429 (honors Retry-After)."""
+        for attempt in range(self.MAX_RETRIES):
+            try:
+                return get_json(url, headers=self._headers)
+            except urllib.error.HTTPError as exc:
+                if exc.code == 429 and attempt < self.MAX_RETRIES - 1:
+                    retry_after = exc.headers.get("Retry-After") if exc.headers else None
+                    try:
+                        wait = float(retry_after) if retry_after else 2.0 ** attempt
+                    except ValueError:
+                        wait = 2.0 ** attempt
+                    time.sleep(min(wait, self.MAX_BACKOFF))
+                    continue
+                raise
+        raise RuntimeError(f"arena request failed after retries: {url}")
 
     # -- fetching -----------------------------------------------------------
 
@@ -83,7 +106,7 @@ class ArenaConnector(BaseConnector):
                 f"?page={page}&per={self.PAGE_SIZE}"
             )
             try:
-                payload = get_json(url, headers=self._headers)
+                payload = self._get(url)
             except Exception as exc:  # noqa: BLE001 - one bad page shouldn't abort all
                 print(f"  [arena] failed listing channels for {self.user}: {exc}")
                 break
@@ -112,7 +135,7 @@ class ArenaConnector(BaseConnector):
                 f"?page={page}&per={self.PAGE_SIZE}"
             )
             try:
-                payload = get_json(url, headers=self._headers)
+                payload = self._get(url)
             except Exception as exc:  # noqa: BLE001 - skip a missing/private channel
                 print(f"  [arena] skip channel '{slug}': {exc}")
                 break
