@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
@@ -12,7 +14,12 @@ from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 from .enrichment import enrich_item
-from .schema import ENRICHMENT_SQLITE_DDL, NORMALIZED_ITEMS_SQLITE_DDL, NormalizedItem
+from .schema import (
+    ENRICHMENT_SQLITE_DDL,
+    NORMALIZED_ITEMS_SQLITE_DDL,
+    WEB_CACHE_SQLITE_DDL,
+    NormalizedItem,
+)
 
 
 @dataclass(frozen=True)
@@ -41,6 +48,7 @@ def init_sqlite(db_path: str | Path) -> None:
     with sqlite3.connect(db_path) as conn:
         conn.executescript(NORMALIZED_ITEMS_SQLITE_DDL)
         conn.executescript(ENRICHMENT_SQLITE_DDL)
+        conn.executescript(WEB_CACHE_SQLITE_DDL)
 
 
 def upsert_item(db_path: str | Path, item: NormalizedItem) -> None:
@@ -181,6 +189,186 @@ def record_provenance_event(
             """,
             (connector, source_id, event_type, timestamp, json.dumps(details or {})),
         )
+
+
+# ---------------------------------------------------------------------------
+# Web-search cache (kept OUT of normalized_items — see schema.WEB_CACHE_SQLITE_DDL)
+# ---------------------------------------------------------------------------
+
+
+# The federated search runs providers on threads, and every one of them touches
+# the cache. `executescript` takes a write lock, so re-running the DDL per call
+# turned a 1s fan-out into a 12s pile-up on the lock. Do it once per DB per
+# process, and serialize the writes.
+_web_cache_ready: set[str] = set()
+_web_cache_lock = threading.Lock()
+
+
+def ensure_web_cache(db_path: str | Path) -> None:
+    """Create the web-cache/preferences tables if this DB predates them."""
+
+    key = str(db_path)
+    if key in _web_cache_ready:
+        return
+    with _web_cache_lock:
+        if key in _web_cache_ready:
+            return
+        with closing(sqlite3.connect(db_path)) as conn, conn:
+            conn.executescript(WEB_CACHE_SQLITE_DDL)
+        _web_cache_ready.add(key)
+
+
+def normalize_query_key(query: str) -> str:
+    """Cache key for a query: case- and whitespace-insensitive."""
+
+    return " ".join(query.lower().split())
+
+
+def cache_web_results(
+    db_path: str | Path,
+    *,
+    provider_id: str,
+    query: str,
+    items: list[NormalizedItem],
+) -> None:
+    """Store live results for (provider, query). Overwrites the previous batch."""
+
+    ensure_web_cache(db_path)
+    key = normalize_query_key(query)
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    # Providers write concurrently; one writer at a time avoids lock timeouts.
+    with _web_cache_lock, closing(sqlite3.connect(db_path)) as conn, conn:
+        conn.execute(
+            "DELETE FROM web_cache_items WHERE provider_id = ? AND query_key = ?",
+            (provider_id, key),
+        )
+        conn.executemany(
+            """
+            INSERT OR REPLACE INTO web_cache_items (
+                provider_id, source_id, query_key, cached_at, payload_json
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            [(provider_id, item.source_id, key, now, item.to_json()) for item in items],
+        )
+
+
+def read_cached_web_results(
+    db_path: str | Path,
+    *,
+    provider_id: str,
+    query: str,
+    max_age_seconds: float,
+) -> list[NormalizedItem] | None:
+    """Return cached results for (provider, query), or None if absent/stale."""
+
+    if max_age_seconds <= 0:
+        return None
+    ensure_web_cache(db_path)
+    key = normalize_query_key(query)
+    with closing(sqlite3.connect(db_path)) as conn, conn:
+        rows = conn.execute(
+            """
+            SELECT cached_at, payload_json FROM web_cache_items
+            WHERE provider_id = ? AND query_key = ?
+            """,
+            (provider_id, key),
+        ).fetchall()
+    if not rows:
+        return None
+
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=max_age_seconds)
+    for cached_at, _ in rows:
+        try:
+            stamp = datetime.strptime(cached_at, "%Y-%m-%dT%H:%M:%SZ").replace(
+                tzinfo=timezone.utc
+            )
+        except ValueError:
+            return None
+        if stamp < cutoff:
+            return None
+    return [NormalizedItem(**json.loads(payload)) for _, payload in rows]
+
+
+def get_cached_web_item(
+    db_path: str | Path,
+    *,
+    provider_id: str,
+    source_id: str,
+) -> NormalizedItem | None:
+    """Fetch one cached web item by identity, newest cache entry wins."""
+
+    ensure_web_cache(db_path)
+    with closing(sqlite3.connect(db_path)) as conn, conn:
+        row = conn.execute(
+            """
+            SELECT payload_json FROM web_cache_items
+            WHERE provider_id = ? AND source_id = ?
+            ORDER BY cached_at DESC LIMIT 1
+            """,
+            (provider_id, source_id),
+        ).fetchone()
+    return NormalizedItem(**json.loads(row[0])) if row else None
+
+
+def save_web_item_to_library(
+    db_path: str | Path,
+    *,
+    provider_id: str,
+    source_id: str,
+    enrich: bool = True,
+) -> NormalizedItem | None:
+    """Promote one cached web result into the curated corpus.
+
+    This is the *only* path from the web cache into ``normalized_items``, so
+    growth of the library stays an explicit, per-item decision.
+    """
+
+    item = get_cached_web_item(db_path, provider_id=provider_id, source_id=source_id)
+    if item is None:
+        return None
+    if enrich:
+        upsert_item_with_enrichment(db_path, item)
+    else:
+        upsert_item(db_path, item)
+    record_provenance_event(
+        db_path,
+        connector=item.connector,
+        source_id=item.source_id,
+        event_type="saved_from_web",
+        details={"provider_id": provider_id},
+    )
+    return item
+
+
+def save_search_preferences(
+    db_path: str | Path, *, pref_key: str, payload: dict[str, object]
+) -> None:
+    """Persist a small JSON blob of UI search settings (sliders, dials, sources)."""
+
+    ensure_web_cache(db_path)
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    with closing(sqlite3.connect(db_path)) as conn, conn:
+        conn.execute(
+            """
+            INSERT INTO search_preferences (pref_key, pref_json, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(pref_key) DO UPDATE SET
+                pref_json=excluded.pref_json,
+                updated_at=excluded.updated_at
+            """,
+            (pref_key, json.dumps(payload, ensure_ascii=False), now),
+        )
+
+
+def load_search_preferences(
+    db_path: str | Path, *, pref_key: str
+) -> dict[str, object] | None:
+    ensure_web_cache(db_path)
+    with closing(sqlite3.connect(db_path)) as conn, conn:
+        row = conn.execute(
+            "SELECT pref_json FROM search_preferences WHERE pref_key = ?", (pref_key,)
+        ).fetchone()
+    return json.loads(row[0]) if row else None
 
 
 def monitor_link_health(

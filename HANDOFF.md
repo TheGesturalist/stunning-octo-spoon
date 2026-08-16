@@ -1,187 +1,135 @@
-# Handoff — 2026-06-17
+# Handoff — 2026-08-16
 
-## Just shipped (commit `8010ec7`, pushed to `origin/main`)
+Branch: **`claude/auto-agent-web-search-98c012`** (not pushed — pushing and
+merging are the owner's call, per [AGENTS.md](AGENTS.md) §7).
+Base: `origin/main` @ `5480d06` (PR #13, merged), plus the two doc commits that
+the merge left behind on `feat/arena-connector`.
 
-Bug fix: `python run.py ingest <source> --limit N` was ignoring `N` for the
-Readwise Reader connector. Root cause was upstream-side: the Readwise Reader v3
-API does **not** accept a `page_size` query param — it silently returns its
-default 100-item page no matter what. `run.py`'s plumbing of `--limit` into
-`fetch_items()` was correct.
-
-Fix:
-- `connectors/reader_io.py` — drop the bogus `page_size` query param, slice
-  `results[:limit]` client-side. Cursor param fixed to `?pageCursor=` (was
-  `&pageCursor=`, which produced a malformed URL on the very first page).
-- `connectors/raindrop_io.py`, `connectors/tumblr.py`,
-  `connectors/internet_archive.py` — same defensive `[:limit]` slice. None of
-  these had been observed to over-return (their APIs cap server-side at 50, 20,
-  and respect `rows=`), but the contract is now enforced at the connector
-  boundary.
-- `tests/test_connector_limits.py` — new mock-based tests for all four
-  connectors. Full suite: 38 tests, all pass.
+**102 tests pass** (was 46). Stdlib only, `unittest` only, no new dependencies,
+no network access in the test suite.
 
 ---
 
-## What's next — two new connectors
+## What shipped
 
-The user wants the local research engine (which already covers Internet
-Archive, Raindrop, Readwise Reader, Tumblr, local library) to also cover:
+Live, query-time web search — the thing the project was originally for. Until
+now every connector only *ingested*; there was no way to ask a question of the
+open web and have the answer ranked next to your own material.
 
-### 1. Wikimedia / cross-wiki, **namespace-aware**
+### 1. `providers/` — a second package beside `connectors/`
 
-The model is the user's existing "Research Console" — a constrained-search UI
-with bangs that mirror the structure below. Reproduce that coverage as one (or
-several) connectors, not just `en.wikipedia.org` mainspace.
+`connectors/` pull on a schedule; `providers/` answer a query now. Both emit
+`NormalizedItem`, which is what lets them be ranked together.
 
-**Sibling projects to cover:**
+| File | What it covers |
+|---|---|
+| `wikimedia.py` | The full 20-bang Research Console table over the MediaWiki Action API |
+| `academic.py` | OpenAlex, Crossref, arXiv, DOAJ — all keyless |
+| `arena_search.py` | Platform-wide Are.na (channel-first, see below) |
+| `cultural.py` | Public Domain Review (full archive), Open Culture (recent window) |
+| `library.py` | The existing corpus, behind the same interface |
+| `base.py` / `_http.py` | The `SearchProvider` contract; shared HTTP with retry/backoff |
 
-| Bang | Target |
-| ---- | ------ |
-| `wp` | English Wikipedia (mainspace) |
-| `meta` | Meta-Wiki (`meta.wikimedia.org`) |
-| `mw` | MediaWiki.org |
-| `wix` | WikiIndex |
+### 2. `federation.py`
 
-**Namespaces within English Wikipedia:**
+Concurrent fan-out, per-source caching, and ranking of the union through
+`query_planner.rank_candidates` — **the first time `query_planner` sits on a
+real search path.** No single provider can break a search; failures are
+reported per source and the rest still return.
 
-| Bang | Namespace |
-| ---- | --------- |
-| `wpp` | Project pages (`Wikipedia:`) |
-| `wpmw` | MediaWiki pages (`MediaWiki:`) |
-| `wpc` | Category pages |
-| `wph` | Help pages |
-| `wpi` | Image / File namespace |
-| `wpu` | User pages |
-| `wpt` | Template pages |
+### 3. Web UI v2 (`web_ui.py`)
 
-**Community / process pages (sub-targets within `Wikipedia:` namespace):**
+Left-hand source nav with the bang vocabulary, the three ranking sliders wired
+to `compute_rank_weights`, per-source trust dials, a per-source outcome strip,
+and persisted settings. Every v1 endpoint (`/`, `/api/connectors`,
+`/api/search`) still behaves exactly as before.
 
-| Bang | Target |
-| ---- | ------ |
-| `wphd` | Help Desk |
-| `wpfaq` | FAQ |
-| `wps` | The Signpost |
-| `wptm` | Template Messages |
-| `vpg` | Village Pump (General) |
-| `vpp` | Village Pump (Policy) |
-| `vpt` | Village Pump (Technical) |
-| `vpo` | Village Pump (Other) |
+### 4. CLI
 
-**Operator:**
-
-| Bang | Behavior |
-| ---- | -------- |
-| `wpl` | List articles (`intitle:"List of"`) |
-
-**Reference docs the user keeps handy:**
-- Wikipedia Namespace Reference
-- Wikipedia Subpages Reference
-
-**Suggested implementation shape:**
-
-- Use the MediaWiki Action API (`https://en.wikipedia.org/w/api.php`) — every
-  Wikimedia site exposes it. No auth needed for reads.
-- One `WikimediaConnector` that takes `site` (host), `namespace` (int or
-  string), and `query`. Construct it from a "preset" map keyed by the bang
-  names above so the user-facing layer can say `wphd: "deletion criteria"` and
-  the connector knows it means `site=en.wikipedia.org`,
-  `namespace=4` (Project), with a title-prefix filter for `Wikipedia:Help_desk`.
-- Inherit `BaseConnector` (see `connectors/base.py`) — must implement
-  `fetch_items`, `fetch_fulltext`, `normalize_item`, `sync_cursor`.
-- Persist as `NormalizedItem` (`connectors/schema.py`). Set `connector` to
-  something like `wikimedia:en.wikipedia/help_desk` so the existing search/UI
-  can filter by source.
-- Honor `--limit` in `fetch_items()` (use the new contract — `[:limit]` slice
-  after fetch — see the just-shipped connectors).
-- Add a CLI surface in `run.py`'s `cmd_ingest` — likely
-  `python run.py ingest wiki --preset wphd --query "..."` or
-  `--site en.wikipedia.org --namespace 4 --query "..."`. The argparse plumbing
-  in `run.py` already has the shape — mirror how `internet_archive` takes
-  `--query`.
-- Tests: mock the MediaWiki API JSON response (`query.search` payload). Pattern
-  to follow is `tests/test_connector_limits.py`.
-
-The original cross-wiki search that motivated this project is documented in the
-PDF the user referenced: `https://alanmacfarlane.com/TEXTS/bastardy.pdf`.
-
-### 2. Are.na
-
-Are.na has a public REST API (`https://api.are.na/v2/`). A read-only connector
-should cover:
-- User-owned channels (`/v2/channels/:slug/contents`)
-- Blocks (text, links, images, attachments — each block type needs slightly
-  different normalization for `fulltext` / `source_url`)
-- Optionally, channel search
-
-Token: Are.na issues personal access tokens via `dev.are.na`. Pattern to
-follow:
-- Config plumbing in `config.py` (e.g. `arena_token()` mirroring
-  `readwise_token()`).
-- CLI flag `--token` with env var fallback (`SPOON_ARENA_TOKEN`).
-- Inherit `BaseConnector`, same shape as `RaindropIOConnector`.
+`run.py websearch` (with `--sources` and the three slider flags) and
+`run.py sources`. `!bang` syntax works in the CLI and the search box.
 
 ---
 
-## Repo orientation
+## Things I learned the hard way (don't re-litigate these)
 
-```
-stunning-octo-spoon/
-  run.py                       # CLI entrypoint — init / ingest / search /
-                               # digest / health / stats / export / serve
-  config.py                    # env-var-driven config helpers
-  connectors/
-    base.py                    # BaseConnector ABC — all connectors inherit
-    schema.py                  # NormalizedItem dataclass (the canonical row)
-    http_helpers.py            # get_json / get_text (urllib-based, no deps)
-    storage.py                 # SQLite upsert + enrichment hooks
-    enrichment.py              # post-ingest enrichment pipeline
-    internet_archive.py        # existing
-    raindrop_io.py             # existing
-    reader_io.py               # existing (Readwise Reader v3)
-    tumblr.py                  # existing
-    local_library.py           # existing (filesystem)
-    academic_private/          # private/academic-source adapters
-  tests/                       # unittest, no third-party deps
-  local_index_service.py       # in-memory BM25 + semantic search over SQLite
-  query_planner.py
-  PROJECT_STATUS.md            # older handoff
-```
-
-Stack: pure-stdlib Python 3.10+ (no `requests`, no `pytest` — `unittest` only).
-SQLite at `$SPOON_DB_PATH` (default `./spoon.db`). The web UI is `run.py serve`
-on `:8080`.
+1. **Are.na block search is closed to API clients.** `/v2/search/blocks` returns
+   403 *even with a valid PAT*, and `/v2/search` reports `authenticated: false`
+   with `blocks: []` always. No token fixes this. Global reach is reconstructed
+   channel-first: search channels → read the top matches' contents over the
+   public endpoint → score blocks locally.
+2. **Wikimedia's `intitle:`/`prefix:` operators are not sufficient alone.**
+   CirrusSearch indexes *redirect* titles, so `intitle:"List of"` happily
+   returns "Geography and cartography in the medieval Islamic world". Presets
+   re-check the real title client-side and over-fetch to compensate.
+3. **Public Domain Review has no API but ships its browse data as static JSON**
+   (`/page-data/collections/page-data.json`, `/page-data/essays/page-data.json`)
+   — 1,255 collections + 343 essays, i.e. the whole archive. That is far better
+   than the 100-item RSS feed, which was the obvious first move.
+4. **Open Culture's search is a Google CSE.** Anything with `s=`/`search=` 302s
+   to `/gcsearch`. The REST *listing* works, so it's a bounded recent window —
+   labelled as such in the nav. Requesting full post bodies makes the endpoint
+   hang and return nothing; `_fields` is deliberate.
+5. **Re-running the cache DDL per call cost 12s per search.** Under the threaded
+   fan-out every provider serialized on SQLite's write lock. `ensure_web_cache()`
+   is memoized per DB per process now. Searches went 14s → 2.2s cold, ~0s warm.
+6. **Short documents broke ranking.** A one-word Are.na channel named
+   "cartography" scored a perfect cosine and swept the top five ahead of the
+   Wikipedia article. Fixed with a length-confidence damping factor.
+7. **The planner's diversity term can't break ties.** It scores
+   `1 / results_from_this_source`, identical for any two sources returning the
+   same count — so a query answered by four sources still showed six Wikipedia
+   hits. Added an MMR pass driven by the Focused↔Diverse slider, which now
+   genuinely changes the source mix.
 
 ---
 
-## Open questions for the next session
+## Decisions the owner made (recorded so they aren't quietly reversed)
 
-1. **One Wikimedia connector or many?** A single parameterized
-   `WikimediaConnector` keyed by `site` + `namespace` is the clean option, but
-   the user's bang vocabulary suggests they think of `wphd`, `vpp`, etc. as
-   distinct first-class sources. Possibly: one class, but register preset
-   instances at CLI-parse time so `--source wphd` works alongside
-   `--source wiki --preset wphd`.
-2. **Per-namespace `content_type`?** The existing connectors use coarse types
-   like `bookmark`, `reading_item`, `archive_item`. Suggest `wiki_article`,
-   `wiki_project_page`, `wiki_help_page`, `wiki_template`, etc. so downstream
-   filters and the digest can distinguish.
-3. **Are.na block-type normalization.** Image/attachment blocks have no
-   `fulltext` — should they be skipped, or stored with empty fulltext and a
-   `metadata.block_type` flag so the search index can opt out?
-4. **Rights.** Wikimedia is CC BY-SA, Are.na content rights vary per block.
-   Set sensible `NormalizedItem.rights` defaults so `run.py export` does the
-   right thing (see existing rights handling in `_iter_exportable_items`).
+- **Live results are cached in a separate namespace**, not in
+  `normalized_items`. Promotion is an explicit per-item "Save to library".
+  The curated corpus stays exactly as curated as they made it.
+- **OpenAlex over Semantic Scholar.** S2 429s immediately without an API key;
+  OpenAlex is keyless and wider. S2 is left unwired.
+- **Google Scholar is out entirely** — not even a launch-link. It has no API,
+  automated querying is against its terms, and a link duplicates a bookmark
+  they already have.
+
+---
+
+## What's next, roughly in order of payoff
+
+1. **Wire the search-mode presets.** `seed_and_mutate`, `contrarian`,
+   `time_tunnel`, `materiality` are already served by `/api/nav` and rendered as
+   data, but nothing consumes the selection yet. `federation.py` is the natural
+   place — each mode is a transform on sliders + source selection.
+2. **Enrich saved web items.** `save_web_item_to_library` runs
+   `upsert_item_with_enrichment`, so facets are extracted on save — but nothing
+   re-enriches items saved before a change to `enrichment.py`. A
+   `run.py reenrich` command is still missing (it was already on the old list).
+3. **Merge `search` and `websearch`?** `search` is library-only and
+   `websearch` is federated. One command with a `--local-only` flag would be
+   tidier, but it changes a documented interface, so it's the owner's call.
+4. **Cosmos and Pinterest** remain unbuilt names in `query_planner`. Neither has
+   a friendly public API; check before promising anything.
+5. **Per-source result limits in the UI.** Currently one global limit is split
+   across sources; a heavy source can crowd a light one before ranking even
+   starts.
 
 ---
 
 ## How to start the next session
 
-From `/Users/themainframe/claude_git_home/stunning-octo-spoon`:
+From `/Users/themainframe/claude_git_home/stunning-octo-spoon` (the canonical
+clone — note this branch was developed in a worktree under `Documents/GitHub`):
 
-```
-git pull
-cat HANDOFF.md
+```bash
+git fetch && git checkout claude/auto-agent-web-search-98c012
+python3 -m unittest discover -s tests    # expect 102 passing
+python3 run.py sources                   # see what's wired
+python3 run.py serve                     # then open http://localhost:8080
 ```
 
-Then ask the new session to start with the Wikimedia connector. The Are.na one
-is smaller and can follow.
+Read [AGENTS.md](AGENTS.md) §9 before touching `providers/` — it records the
+source constraints above, and several of them look like bugs if you don't know
+they're deliberate.

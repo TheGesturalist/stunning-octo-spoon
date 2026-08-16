@@ -181,6 +181,32 @@ def export_result_cards(cards: Sequence[ResultCard]) -> list[dict[str, Any]]:
     return exported
 
 
+# Public aliases: the federation layer scores local and live-web results with
+# exactly the same primitives, so relevance is comparable across origins.
+def tokenize(text: str) -> list[str]:
+    return _tokenize(text)
+
+
+def term_freq(tokens: Sequence[str]) -> dict[str, float]:
+    return _term_freq(tokens)
+
+
+def cosine_similarity(left: Mapping[str, float], right: Mapping[str, float]) -> float:
+    return _cosine_similarity(left, right)
+
+
+def find_term_matches(
+    text: str, query_terms: Sequence[str]
+) -> list[TermMatchLocation]:
+    return _find_term_matches(text, query_terms)
+
+
+def build_snippet(
+    text: str, matches: Sequence[TermMatchLocation], radius: int = 60
+) -> str:
+    return _build_snippet(text, matches, radius)
+
+
 def _searchable_text_for_rights(doc: IndexedDocument) -> str:
     allow_fulltext = bool(doc.rights.get("allow_fulltext", False))
     allow_abstract = bool(doc.rights.get("allow_abstract", False))

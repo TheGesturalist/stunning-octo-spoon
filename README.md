@@ -1,20 +1,68 @@
 # stunning-octo-spoon
 
-A personal, offline-first research search engine. Connectors pull items from
-Raindrop, Readwise Reader, Are.na, and more into one local SQLite database and
-let you search across all of it — full-text plus semantic neighbors. Pure Python
-3.10+ standard library; `unittest` only.
+A personal research search engine with two halves:
+
+- **Your library** — connectors pull items from Raindrop, Readwise Reader,
+  Are.na and more into one local SQLite database (6,693 items), searchable
+  full-text plus semantic neighbours.
+- **The live web** — providers answer a query in real time against Wikimedia
+  (20 constrained presets), open academic databases, all of Are.na, and the
+  Public Domain Review. Results are ranked *together* with your library.
+
+Pure Python 3.10+ standard library; `unittest` only; no API keys required.
 
 **Documentation**
-- **[USER_GUIDE.md](USER_GUIDE.md)** — how to search (web UI + CLI), filtering, tips.
-- **[AGENTS.md](AGENTS.md)** — for anyone (agent or human) working on the code: where things live, current state, the Are.na re-sync procedure, safety rules, troubleshooting.
+- **[USER_GUIDE.md](USER_GUIDE.md)** — how to search (web UI + CLI), sources, bangs, ranking controls.
+- **[AGENTS.md](AGENTS.md)** — for anyone (agent or human) working on the code: where things live, current state, source constraints, the Are.na re-sync procedure, safety rules, troubleshooting.
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** — data-flow diagram.
 
 Quick start:
 ```bash
-python3 run.py serve      # web UI at http://localhost:8080
-python3 run.py search "cartography" --indexes arena
+python3 run.py serve                          # web UI at http://localhost:8080
+python3 run.py sources                        # every searchable source + its bang
+python3 run.py websearch "cartography"        # library + live web, ranked together
+python3 run.py websearch '!wphd deletion'     # one constrained source, via its bang
+python3 run.py search "cartography" --indexes arena   # library only
 ```
+
+## Live search sources
+
+| Group | Sources |
+|---|---|
+| Wikimedia | `wp` `meta` `mw` `wix` · namespaces `wpp` `wpmw` `wpc` `wph` `wpi` `wpu` `wpt` · community `wphd` `wpfaq` `wps` `wptm` `vpg` `vpp` `vpt` `vpo` · operator `wpl` |
+| Academic | OpenAlex `oa` · Crossref `cr` · arXiv `ax` · DOAJ `doaj` |
+| Are.na | channels `arc` · blocks `arb` |
+| Canonical & cultural | Public Domain Review `pdr` · Open Culture `oc` |
+
+Live results are cached in a separate `web_cache_items` table and **never** enter
+the curated corpus on their own — promotion is an explicit per-item
+"Save to library" action.
+
+Two source constraints are worth knowing, because they shape the design:
+Are.na does not expose block search to API clients (so block reach is
+channel-first), and Google Scholar is excluded outright — no API, and automated
+querying is against its terms.
+
+## Federated search (`federation.py`)
+
+`federated_search()` fans out to the selected providers concurrently, caches
+their results, and ranks the union through `query_planner.rank_candidates`.
+Local and live results are scored with the *same* primitives, so they compete
+fairly rather than being stitched together afterwards.
+
+Two corrections sit around the planner's ranking:
+
+- **Length normalization** — raw cosine similarity gives a one-word Are.na
+  channel called "cartography" a perfect score against the query "cartography".
+  Semantic score is damped by document length so short titles stop sweeping the
+  page.
+- **MMR diversification** — the planner's diversity component scores
+  `1 / results_from_this_source`, which ties whenever sources return equal
+  counts. A second pass penalizes each additional pick from an
+  already-represented source, scaled by the Focused↔Diverse slider.
+
+No provider can break a search: failures are caught per source, reported in
+`outcomes`, and the rest of the results still return.
 
 ## Query Planner Module
 
