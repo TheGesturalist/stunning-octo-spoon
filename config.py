@@ -5,6 +5,7 @@ Environment variables (CLI flags override these; env vars override defaults):
     SPOON_READWISE_TOKEN   — Readwise Reader API token
     SPOON_TUMBLR_API_KEY   — Tumblr API key
     SPOON_TUMBLR_BLOG      — Tumblr blog hostname
+    SPOON_ARENA_TOKEN      — Are.na personal access token (optional; public reads need none)
     SPOON_DB_PATH          — SQLite database path (default: ./spoon.db)
 """
 
@@ -27,3 +28,8 @@ def tumblr_api_key() -> str | None:
 
 def tumblr_blog() -> str | None:
     return os.environ.get("SPOON_TUMBLR_BLOG")
+
+def arena_token() -> str | None:
+    # Strip stray whitespace/newlines so a token read from a file can't break
+    # the Authorization header.
+    return (os.environ.get("SPOON_ARENA_TOKEN") or "").strip() or None
