@@ -1,8 +1,14 @@
 __pycache__/
 *.py[cod]
 *.db
+*.db.*
 *.sqlite
 *.sqlite3
+*.bak
+
+# secrets
+.env
+.env.*
 
 # macOS
 .DS_Store
