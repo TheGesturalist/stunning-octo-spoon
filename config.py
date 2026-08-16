@@ -30,4 +30,6 @@ def tumblr_blog() -> str | None:
     return os.environ.get("SPOON_TUMBLR_BLOG")
 
 def arena_token() -> str | None:
-    return os.environ.get("SPOON_ARENA_TOKEN")
+    # Strip stray whitespace/newlines so a token read from a file can't break
+    # the Authorization header.
+    return (os.environ.get("SPOON_ARENA_TOKEN") or "").strip() or None
