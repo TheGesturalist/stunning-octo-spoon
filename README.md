@@ -19,7 +19,7 @@ Pure Python 3.10+ standard library; `unittest` only; no API keys required.
 
 Quick start:
 ```bash
-python3 run.py serve --port 8090              # web UI at http://localhost:8090
+python3 run.py serve                          # web UI at http://localhost:8090
 python3 run.py sources                        # every searchable source + its bang
 python3 run.py websearch "cartography"        # library + live web, ranked together
 python3 run.py websearch '!wphd deletion'     # one constrained source, via its bang
@@ -27,9 +27,9 @@ python3 run.py websearch "maps" --mode time_tunnel   # exploratory search modes
 python3 run.py search "cartography" --indexes arena   # library only
 ```
 
-> Run on **8090**, not spoon's default 8080: the cloudflared tunnel maps
-> `library.bluebear.one` to `localhost:8080`, so anything bound there is
-> published at that hostname instead of Calibre.
+> `serve` defaults to **8090**, deliberately: the cloudflared tunnel maps
+> `library.bluebear.one` to `localhost:8080`, so a server bound there is
+> published at that hostname instead of Calibre. Don't move it back.
 
 ## Live search sources
 

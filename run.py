@@ -752,7 +752,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_serve = sub.add_parser("serve", help="Launch the local web UI")
     p_serve.add_argument("--db", default=config.db_path(), metavar="PATH", help="Database path")
     p_serve.add_argument("--host", default="127.0.0.1", metavar="HOST", help="Bind host (default: 127.0.0.1)")
-    p_serve.add_argument("--port", type=int, default=8080, metavar="PORT", help="Bind port (default: 8080)")
+    # 8090, not 8080: this machine's cloudflared tunnel maps library.bluebear.one
+    # to localhost:8080, so a server bound there is published at that hostname.
+    p_serve.add_argument("--port", type=int, default=8090, metavar="PORT", help="Bind port (default: 8090)")
     return parser
 def main() -> None:
     parser = build_parser()

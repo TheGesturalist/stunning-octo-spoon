@@ -135,8 +135,7 @@ concrete. See AGENTS.md → "Search modes".
 4. **Port 8080 is a trap on this machine.** spoon's default is 8080; the
    cloudflared tunnel maps `library.bluebear.one` to `localhost:8080`. While a
    stale spoon server held that port, the corpus was being served at that public
-   hostname instead of Calibre. Always `--port 8090`. Changing the default in
-   `run.py` would be the durable fix.
+   hostname instead of Calibre. Fixed: `serve` now defaults to 8090. Don't move it back.
 
 5. **VS Code `git.autofetch` leaves stale ref locks.** Interrupted background
    fetches leave `.git/refs/remotes/origin/main.lock`, and git never clears it —
