@@ -18,6 +18,7 @@ Each Are.na *block* becomes one NormalizedItem. Blocks come in several classes
 
 from __future__ import annotations
 
+import os
 import time
 import urllib.error
 from typing import Any
@@ -57,6 +58,13 @@ class ArenaConnector(BaseConnector):
         self.channels = [c.strip() for c in (channel or "").split(",") if c.strip()]
         self.user = (user or "").strip() or None
         self.token = token
+        # Optional polite delay between requests (seconds) to avoid tripping
+        # Are.na's rate limit on large syncs. Off by default (keeps tests fast);
+        # set SPOON_ARENA_THROTTLE=0.5 for a full-workspace ingest.
+        try:
+            self.throttle = float(os.environ.get("SPOON_ARENA_THROTTLE", "0") or 0)
+        except ValueError:
+            self.throttle = 0.0
         if not self.channels and not self.user:
             raise ValueError(
                 "ArenaConnector needs either channel=<slug[,slug...]> or user=<slug>."
@@ -76,8 +84,10 @@ class ArenaConnector(BaseConnector):
         return headers
 
     def _get(self, url: str) -> dict[str, Any]:
-        """get_json with reactive backoff on HTTP 429 (honors Retry-After)."""
+        """get_json with an optional throttle and reactive backoff on HTTP 429."""
         for attempt in range(self.MAX_RETRIES):
+            if self.throttle:
+                time.sleep(self.throttle)
             try:
                 return get_json(url, headers=self._headers)
             except urllib.error.HTTPError as exc:
